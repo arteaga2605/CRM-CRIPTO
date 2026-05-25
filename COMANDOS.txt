@@ -1,0 +1,19 @@
+# 1. Descomprime el ZIP
+unzip crypto_crm.zip
+cd crypto_crm
+
+# 2. Crea entorno virtual
+python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
+
+# 3. Instala dependencias
+pip install -r requirements.txt
+
+# 4. Inicia la API
+uvicorn app.main:app --reload --port 8000
+
+En la segunda terminal tambn activar entorno virtual 
+ .\venv\Scripts\Activate.ps1
+
+# 5. En otra terminal, inicia el dashboard
+streamlit run dashboard/streamlit_app.py

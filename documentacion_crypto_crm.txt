@@ -1,0 +1,415 @@
+═══════════════════════════════════════════════════════════════════════════════
+                         📘 DOCUMENTACION DEL PROYECTO
+                              CRYPTO CRM v1.0.0
+                    Tratando Criptomonedas como Clientes
+═══════════════════════════════════════════════════════════════════════════════
+
+1. DESCRIPCION GENERAL
+═══════════════════════
+Crypto CRM es un sistema completo de gestion de portafolio de criptomonedas 
+construido con la mentalidad de CRM (Customer Relationship Management). 
+Cada moneda es un "cliente" al que le das seguimiento, atencion y estrategia.
+
+Filosofia: "No operas criptomonedas, gestionas relaciones con activos digitales"
+
+2. ARQUITECTURA DEL SISTEMA
+════════════════════════════
+
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CAPA DE PRESENTACION                            │
+│  ┌──────────────┐                                                            │
+│  │ Streamlit    │  Dashboard visual con graficos Plotly                     │
+│  │ Dashboard    │  KPIs, alertas, pipeline de oportunidades, tareas          │
+│  └──────────────┘                                                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                               CAPA DE API REST                               │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ /clientes    │  │ /interacciones│ │ /oportunidades│ │ /tareas      │      │
+│  │ CRUD criptos │  │ Transacciones │  │ Pipeline     │  │ Alertas      │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └──────────────┘      │
+│                              FastAPI + Pydantic                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                             CAPA DE SERVICIOS                                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐                        │
+│  │ CRMService   │  │ Analytics    │  │ ExchangeSync │                        │
+│  │ Logica de    │  │ Metricas,    │  │ CCXT para    │                        │
+│  │ negocio      │  │ reportes,    │  │ Binance,     │                        │
+│  │              │  │ alertas      │  │ Coinbase     │                        │
+│  └──────────────┘  └──────────────┘  └──────────────┘                        │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CAPA DE DATOS                                   │
+│  ┌────────────────────────────────────────────────────────────────────────┐  │
+│  │ SQLAlchemy ORM + SQLite (por defecto) / PostgreSQL (produccion)       │  │
+│  │ Entidades: ClienteCripto, Interaccion, Oportunidad, Tarea             │  │
+│  └────────────────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+3. ENTIDADES PRINCIPALES (Modelo de Datos)
+═══════════════════════════════════════════
+
+CLIENTE CRIPTO (La moneda como cliente)
+────────────────────────────────────────
+- id: Identificador unico
+- symbol: Simbolo de la moneda (BTC, ETH, PEPE)
+- nombre: Nombre completo
+- categoria: layer1, defi, meme, stablecoin, etc.
+- exchange_principal: Binance, Coinbase, etc.
+- precio_actual: Precio de mercado actual
+- cantidad_total: Cantidad poseida
+- costo_promedio: Precio promedio de compra
+- inversion_total: USD invertidos
+- valor_mercado: USD valor actual
+- pnl_total: Profit & Loss acumulado
+- roi_porcentaje: Retorno sobre inversion
+- estado: PROSPECTO, ACTIVO_COMPRA, ACTIVO_PELIGRO, DORMANTE, CHURN, VIP
+- sentiment_score: -1.00 a 1.00 (bajista/alcista)
+- prioridad: 1 (urgente) a 5 (bajo)
+- tags: Etiquetas personalizadas
+- notas_personal: Notas personales del trader
+- fecha_ultimo_contacto: Ultima vez que interactuaste
+- fecha_creacion: Cuando se registro en el CRM
+
+INTERACCION (Transaccion con el cliente)
+─────────────────────────────────────────
+- id: Identificador
+- cliente_id: Referencia al cliente
+- tipo: COMPRA, VENTA, STAKING, UNSTAKING, TRANSFERENCIA, DIVIDENDO, AIRDROP
+- monto_usd: Valor en dolares
+- precio_unitario: Precio por unidad
+- cantidad: Cantidad de monedas
+- fee: Comision pagada
+- exchange: Donde ocurrio
+- timestamp: Fecha y hora
+- notas: Contexto emocional/estrategico
+- pnl_realizado: Ganancia/perdida (solo en ventas)
+
+OPORTUNIDAD (Trade setup en pipeline)
+──────────────────────────────────────
+- id: Identificador
+- cliente_id: Referencia al cliente
+- tipo: swing_trade, scalp, dca, breakout, reversal, staking
+- estado: abierta, ejecutada, cancelada
+- precio_entrada: Precio de entrada planificado
+- precio_objetivo: Take profit
+- precio_stop_loss: Stop loss
+- riesgo_beneficio: Ratio R:B calculado
+- monto_planificado: USD a invertir
+- fecha_creacion: Cuando se creo el setup
+- fecha_ejecucion: Cuando se ejecuto
+- confianza: 1-5 estrellas
+- notas_analisis: Analisis tecnico/fundamental
+- resultado_pnl: Resultado final
+
+TAREA (Alerta o recordatorio)
+──────────────────────────────
+- id: Identificador
+- cliente_id: Referencia al cliente
+- tipo_tarea: revisar_stop, take_profit, dca, actualizar_precio, etc.
+- descripcion: Que hay que hacer
+- fecha_limite: Cuando vence
+- completada: Si ya se hizo
+- fecha_completada: Cuando se completo
+- prioridad: 1-5
+
+4. ESTADOS DEL CLIENTE (Criptomoneda)
+══════════════════════════════════════
+
+PROSPECTO      → No tienes posicion, solo observas
+ACTIVO_COMPRA  → Tienes posicion y va bien (ROI > 0)
+ACTIVO_PELIGRO → Tienes posicion pero en perdida (ROI < -20%)
+DORMANTE       → Tienes posicion pero no se mueve (ROI = 0)
+CHURN          → Vendiste o abandonaste el seguimiento
+VIP            → Tu mejor moneda (ROI > 50%)
+
+5. FLUJO DE TRABAJO TIPICO
+═══════════════════════════
+
+PASO 1: REGISTRAR UN CLIENTE
+─────────────────────────────
+POST /clientes/
+{
+    "symbol": "BTC",
+    "nombre": "Bitcoin",
+    "categoria": "layer1",
+    "tags": "favorito,hodl",
+    "notas_personal": "Reserva de valor, comprar en dips"
+}
+
+PASO 2: REGISTRAR UNA INTERACCION (COMPRA)
+───────────────────────────────────────────
+POST /interacciones/
+{
+    "cliente_symbol": "BTC",
+    "tipo": "compra",
+    "cantidad": 0.01,
+    "precio_unitario": 65000.00,
+    "fee": 6.50,
+    "exchange": "binance",
+    "notas": "Compra en soporte semanal de $64k"
+}
+
+El sistema automaticamente:
+- Calcula costo promedio
+- Actualiza cantidad total
+- Recalcula ROI
+- Actualiza estado del cliente
+
+PASO 3: CREAR UNA OPORTUNIDAD (TRADE SETUP)
+───────────────────────────────────────────
+POST /oportunidades/
+{
+    "cliente_symbol": "BTC",
+    "tipo": "swing_trade",
+    "precio_entrada": 65000.00,
+    "precio_objetivo": 72000.00,
+    "precio_stop_loss": 62000.00,
+    "monto_planificado": 1000.00,
+    "confianza": 4,
+    "notas_analisis": "Breakout de resistencia historica, volumen creciente"
+}
+
+El sistema calcula automaticamente:
+- Riesgo:Beneficio = (72000-65000)/(65000-62000) = 1:2.33
+
+PASO 4: CREAR TAREAS DE SEGUIMIENTO
+────────────────────────────────────
+POST /tareas/
+{
+    "cliente_symbol": "BTC",
+    "tipo_tarea": "revisar_stop",
+    "descripcion": "Revisar si BTC mantiene soporte de $62k",
+    "prioridad": 2
+}
+
+PASO 5: VER DASHBOARD
+─────────────────────
+Abrir http://localhost:8501 en navegador
+
+6. ALERTAS INTELIGENTES AUTOMATICAS
+════════════════════════════════════
+
+El sistema genera alertas automaticas basadas en reglas de negocio:
+
+🔴 CRITICO: Perdida > 20%
+   → Sugiere: stop_loss o promediar
+
+🟡 ADVERTENCIA: Concentracion > 30% en una moneda
+   → Sugiere: rebalancear
+
+🟢 INFO: Ganancia > 50%
+   → Sugiere: take_profit parcial
+
+🔵 BAJO: Sin movimiento 30+ dias
+   → Sugiere: revision de estrategia
+
+7. ENDPOINTS DE LA API
+═══════════════════════
+
+CLIENTES
+─────────
+GET    /clientes/              → Listar todas las criptomonedas
+POST   /clientes/              → Registrar nueva moneda
+GET    /clientes/{symbol}      → Detalle de una moneda
+PUT    /clientes/{symbol}      → Actualizar moneda
+DELETE /clientes/{symbol}      → Eliminar moneda
+POST   /clientes/{symbol}/actualizar-precio → Actualizar precio de mercado
+
+INTERACCIONES
+──────────────
+POST /interacciones/            → Registrar compra/venta/staking
+GET  /interacciones/cliente/{symbol} → Historial de transacciones
+
+OPORTUNIDADES
+──────────────
+GET  /oportunidades/?estado=abierta → Listar oportunidades
+POST /oportunidades/            → Crear trade setup
+POST /oportunidades/{id}/cerrar → Cerrar oportunidad
+
+TAREAS
+───────
+GET  /tareas/pendientes         → Tareas vencidas
+GET  /tareas/proximas           → Tareas proximas a vencer
+POST /tareas/                   → Crear tarea
+POST /tareas/{id}/completar     → Marcar como completada
+
+DASHBOARD
+──────────
+GET /dashboard/resumen          → Resumen para el dashboard
+
+8. INSTALACION Y EJECUCION
+═══════════════════════════
+
+REQUISITOS
+───────────
+- Python 3.10 o superior
+- pip actualizado
+
+PASOS
+──────
+1. Crear entorno virtual:
+   python -m venv venv
+
+2. Activar entorno virtual:
+   Windows: venv\Scriptsctivate
+   Linux/Mac: source venv/bin/activate
+
+3. Instalar dependencias:
+   pip install -r requirements.txt
+
+4. Iniciar API (Terminal 1):
+   uvicorn app.main:app --reload --port 8000
+
+5. Iniciar Dashboard (Terminal 2):
+   streamlit run dashboard/streamlit_app.py
+
+6. Abrir navegador:
+   API:        http://127.0.0.1:8000
+   Docs:       http://127.0.0.1:8000/docs
+   Dashboard:  http://localhost:8501
+
+9. ESTRUCTURA DE ARCHIVOS
+══════════════════════════
+
+crypto_crm/
+├── app/
+│   ├── __init__.py              # Inicializacion del paquete
+│   ├── main.py                  # Entry point FastAPI
+│   ├── models.py                # SQLAlchemy ORM models
+│   ├── schemas.py               # Pydantic schemas
+│   ├── tasks.py                 # Celery background jobs
+│   ├── api/
+│   │   ├── clientes.py          # CRUD clientes
+│   │   ├── interacciones.py     # CRUD interacciones
+│   │   ├── oportunidades.py     # CRUD oportunidades
+│   │   └── tareas.py            # CRUD tareas
+│   └── services/
+│       ├── crm_service.py        # Logica de negocio
+│       ├── exchange_sync.py     # Conector CCXT
+│       └── analytics.py          # Metricas y reportes
+├── dashboard/
+│   └── streamlit_app.py         # Dashboard visual
+├── config.py                    # Configuracion
+├── requirements.txt             # Dependencias
+├── .env.example                 # Variables de entorno ejemplo
+├── .gitignore                   # Exclusiones Git
+└── README.md                    # Documentacion
+
+10. DEPENDENCIAS PRINCIPALES
+═════════════════════════════
+
+Backend:
+- fastapi[standard]     → Framework API REST
+- uvicorn[standard]     → Servidor ASGI
+- sqlalchemy            → ORM para base de datos
+- alembic               → Migraciones de base de datos
+- pydantic              → Validacion de datos
+- pydantic-settings     → Configuracion con variables de entorno
+
+Dashboard:
+- streamlit             → Framework para dashboards
+- plotly                → Graficos interactivos
+- pandas                → Manipulacion de datos
+
+Exchange:
+- ccxt                  → Conexion a exchanges (Binance, Coinbase, etc.)
+
+Background:
+- celery                → Tareas en background
+- redis                 → Broker para Celery
+
+Notificaciones:
+- python-telegram-bot   → Notificaciones a Telegram
+
+Testing:
+- pytest                → Framework de testing
+- httpx                 → Cliente HTTP para tests
+
+11. SINCRONIZACION CON EXCHANGES
+═════════════════════════════════
+
+Para sincronizar tu portafolio real desde Binance:
+
+1. Configurar API keys en .env:
+   EXCHANGE_ID=binance
+   EXCHANGE_API_KEY=tu_api_key
+   EXCHANGE_API_SECRET=tu_secret
+
+2. Usar el conector CCXT:
+   from app.services.exchange_sync import ExchangeConnector
+   from app.services.crm_service import CRMService
+
+   conn = ExchangeConnector("API_KEY", "API_SECRET", "binance")
+   crm = CRMService(db)
+   conn.sincronizar_portafolio(crm)
+
+Esto automaticamente:
+- Registra monedas nuevas como clientes
+- Actualiza precios de mercado
+- Crea tareas de revision inicial
+
+12. TAREAS EN BACKGROUND (Celery)
+══════════════════════════════════
+
+Para ejecutar alertas automaticas:
+
+1. Iniciar Redis:
+   redis-server
+
+2. Iniciar worker Celery:
+   celery -A app.tasks worker --beat --loglevel=info
+
+Tareas programadas:
+- verificar_alertas_programadas: Cada hora revisa alertas
+- sincronizar_precios: Actualiza precios de mercado
+- reporte_diario: Genera reporte diario del portafolio
+
+13. SEGURIDAD
+══════════════
+
+- Las API keys de exchange NUNCA se almacenan en la base de datos
+- Usa variables de entorno (.env)
+- SQLite local por defecto (puedes migrar a PostgreSQL)
+- Sin conexion a internet requerida para operacion basica
+
+14. MIGRACION A POSTGRESQL
+═══════════════════════════
+
+Para produccion, cambia en config.py:
+
+DATABASE_URL = "postgresql://usuario:password@localhost:5432/crypto_crm"
+
+Y ejecuta:
+pip install psycopg2-binary
+
+15. ROADMAP FUTURO
+═══════════════════
+
+- [x] Modelo CRM completo
+- [x] API REST con FastAPI
+- [x] Dashboard visual con Streamlit
+- [x] Alertas inteligentes
+- [x] Conector CCXT para exchanges
+- [ ] WebSockets para precios en tiempo real
+- [ ] Notificaciones Telegram/Email
+- [ ] Backtesting de oportunidades
+- [ ] Machine Learning para sentiment scoring
+- [ ] Integracion con TradingView webhooks
+- [ ] App movil con React Native
+
+16. LICENCIA
+═════════════
+MIT - Usalo, modificalo, hazlo tuyo.
+
+═══════════════════════════════════════════════════════════════════════════════
+                    Construido con amor para traders que 
+                    piensan como gestores de relaciones.
+═══════════════════════════════════════════════════════════════════════════════

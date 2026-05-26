@@ -2,9 +2,10 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
-from app.models import SessionLocal, init_db
+from app.models import SessionLocal
 from app.schemas import ClienteCriptoCreate, ClienteCriptoUpdate, ClienteCriptoResponse
 from app.services.crm_service import CRMService
+from app.services.exchange_sync import ExchangeConnector
 
 router = APIRouter(prefix="/clientes", tags=["Clientes"])
 
@@ -72,9 +73,22 @@ def eliminar_cliente(symbol: str, db: Session = Depends(get_db)):
     return {"message": f"Cliente {symbol} eliminado"}
 
 @router.post("/{symbol}/actualizar-precio")
-def actualizar_precio(symbol: str, precio: float, db: Session = Depends(get_db)):
+def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(get_db)):
+    """
+    Actualiza el precio de mercado del cliente.
+    Si no se envía 'precio', se obtiene automáticamente desde Binance.
+    """
     crm = CRMService(db)
-    try:
-        return crm.actualizar_precio_mercado(symbol, precio)
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    cliente = crm.obtener_cliente(symbol)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    
+    if precio is None:
+        # Obtener precio en tiempo real desde Binance
+        connector = ExchangeConnector()
+        precio = connector.obtener_precio(symbol)
+        if precio == 0:
+            raise HTTPException(status_code=400, detail=f"No se pudo obtener precio de {symbol} desde Binance")
+    
+    cliente_actualizado = crm.actualizar_precio_mercado(symbol, precio)
+    return cliente_actualizado

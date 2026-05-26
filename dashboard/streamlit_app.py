@@ -8,6 +8,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
+import time
 
 API_URL = "http://localhost:8000"
 
@@ -30,6 +31,7 @@ page = st.sidebar.radio("Navegacion", [
     "🎯 Oportunidades",
     "✅ Tareas",
     "📈 Analytics",
+    "📡 Mercado en Vivo",
     "⚙️ Configuracion"
 ])
 
@@ -53,6 +55,34 @@ def post(endpoint, data):
         st.error(f"Error: {e}")
         return None
 
+def obtener_precio_real(symbol):
+    """Obtiene precio actual desde Binance vía nuestra API"""
+    try:
+        r = requests.get(f"{API_URL}/precios/{symbol}")
+        if r.status_code == 200:
+            return r.json().get("price", 0)
+    except:
+        pass
+    return 0
+
+def obtener_ticker_real(symbol):
+    try:
+        r = requests.get(f"{API_URL}/ticker/{symbol}")
+        if r.status_code == 200:
+            return r.json()
+    except:
+        pass
+    return {}
+
+def obtener_velas(symbol, timeframe="1h", limit=100):
+    try:
+        r = requests.get(f"{API_URL}/velas/{symbol}", params={"timeframe": timeframe, "limit": limit})
+        if r.status_code == 200:
+            return r.json().get("data", [])
+    except:
+        pass
+    return []
+
 # ═══════════════════════════════════════
 # PAGINA: DASHBOARD
 # ═══════════════════════════════════════
@@ -66,7 +96,6 @@ if page == "🏠 Dashboard":
         distribucion = data.get("distribucion", [])
         top = data.get("top_performers", [])
 
-        # KPIs
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Clientes Activos", resumen.get("clientes_activos", 0))
         col2.metric("VIP", resumen.get("clientes_vip", 0))
@@ -76,7 +105,6 @@ if page == "🏠 Dashboard":
 
         st.divider()
 
-        # Graficos
         col_left, col_right = st.columns(2)
 
         with col_left:
@@ -96,7 +124,6 @@ if page == "🏠 Dashboard":
                            title="ROI por Moneda")
                 st.plotly_chart(fig, use_container_width=True)
 
-        # Alertas
         st.subheader("🔔 Alertas Inteligentes")
         if alertas:
             for alerta in alertas:
@@ -109,7 +136,7 @@ if page == "🏠 Dashboard":
             st.success("No hay alertas activas. Todo en orden! 🎉")
 
 # ═══════════════════════════════════════
-# PAGINA: CLIENTES
+# PAGINA: CLIENTES (igual que antes, pero añadimos botón para actualizar precio desde Binance)
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
@@ -134,7 +161,6 @@ elif page == "👥 Clientes":
                 "Tags": c.get("tags", "")
             } for c in clientes])
 
-            # Filtros
             estado_filter = st.multiselect("Filtrar por estado", 
                 df["Estado"].unique().tolist(), default=[])
             if estado_filter:
@@ -142,7 +168,6 @@ elif page == "👥 Clientes":
 
             st.dataframe(df, use_container_width=True, hide_index=True)
 
-            # Detalle
             selected = st.selectbox("Ver detalle de", [c["symbol"] for c in clientes])
             if selected:
                 cliente = fetch(f"/clientes/{selected}")
@@ -154,6 +179,20 @@ elif page == "👥 Clientes":
                     with c2:
                         st.metric("Valor Mercado", f"${float(cliente.get('valor_mercado', 0)):,.2f}")
                         st.metric("Inversion", f"${float(cliente.get('inversion_total', 0)):,.2f}")
+
+                    # Botón para actualizar precio desde Binance
+                    if st.button(f"Actualizar precio de {selected} desde Binance"):
+                        precio_real = obtener_precio_real(selected)
+                        if precio_real > 0:
+                            # Llamar a nuestro endpoint de actualización
+                            r = requests.post(f"{API_URL}/clientes/{selected}/actualizar-precio", json={"precio": precio_real})
+                            if r.status_code == 200:
+                                st.success(f"Precio de {selected} actualizado a ${precio_real}")
+                                st.rerun()
+                            else:
+                                st.error("Error al actualizar precio")
+                        else:
+                            st.error("No se pudo obtener precio de Binance")
 
                     st.text_area("Notas personales", 
                                value=cliente.get("notas_personal", ""), 
@@ -185,7 +224,7 @@ elif page == "👥 Clientes":
                         st.balloons()
 
 # ═══════════════════════════════════════
-# PAGINA: INTERACCIONES
+# PAGINA: INTERACCIONES (sin cambios)
 # ═══════════════════════════════════════
 elif page == "💱 Interacciones":
     st.title("💱 Registro de Interacciones")
@@ -224,7 +263,6 @@ elif page == "💱 Interacciones":
                     st.success("Interaccion registrada!")
                     st.json(result)
 
-    # Historial
     st.subheader("📜 Historial")
     hist_symbol = st.text_input("Ver historial de", key="hist_symbol").upper()
     if hist_symbol:
@@ -234,7 +272,7 @@ elif page == "💱 Interacciones":
             st.dataframe(df_hist, use_container_width=True)
 
 # ═══════════════════════════════════════
-# PAGINA: OPORTUNIDADES
+# PAGINA: OPORTUNIDADES (sin cambios)
 # ═══════════════════════════════════════
 elif page == "🎯 Oportunidades":
     st.title("🎯 Pipeline de Oportunidades")
@@ -294,7 +332,7 @@ elif page == "🎯 Oportunidades":
                         st.info(f"Riesgo:Beneficio calculado: 1:{rr:.2f}")
 
 # ═══════════════════════════════════════
-# PAGINA: TAREAS
+# PAGINA: TAREAS (sin cambios)
 # ═══════════════════════════════════════
 elif page == "✅ Tareas":
     st.title("✅ Tareas y Alertas")
@@ -342,58 +380,120 @@ elif page == "✅ Tareas":
                         st.success("Tarea creada!")
 
 # ═══════════════════════════════════════
-# PAGINA: ANALYTICS
+# PAGINA: ANALYTICS (mejorado con datos reales)
 # ═══════════════════════════════════════
 elif page == "📈 Analytics":
     st.title("📈 Analytics y Reportes")
 
-    # Simulacion de datos para visualizacion
-    st.info("Conecta la API para ver datos reales. Aqui se muestra la estructura de reportes.")
+    # Obtener datos reales de analytics
+    data = fetch("/dashboard/resumen")
+    if data:
+        resumen = data.get("resumen", {})
+        st.subheader("Métricas del Portafolio")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Invertido", f"${resumen.get('total_invertido', 0):,.2f}")
+        col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado', 0):,.2f}")
+        col3.metric("PnL Total", f"${resumen.get('pnl_total', 0):,.2f}")
 
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Rendimiento por Categoria")
-        sample_data = pd.DataFrame({
-            "categoria": ["layer1", "defi", "meme", "layer2"],
-            "roi_promedio": [45.2, -12.5, 120.8, 23.1],
-            "monedas": [3, 5, 2, 4]
-        })
-        fig = px.bar(sample_data, x="categoria", y="roi_promedio", 
-                    color="roi_promedio", color_continuous_scale="RdYlGn")
+    # Datos de distribución desde la API
+    distribucion = fetch("/dashboard/resumen").get("distribucion", []) if data else []
+    if distribucion:
+        st.subheader("Distribución del Portafolio")
+        df_dist = pd.DataFrame(distribucion)
+        fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composición Actual")
         st.plotly_chart(fig, use_container_width=True)
 
-    with col2:
-        st.subheader("Evolucion PnL Mensual")
-        sample_pnl = pd.DataFrame({
-            "mes": ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05"],
-            "pnl": [120, -45, 230, 89, 156]
-        })
-        fig = px.line(sample_pnl, x="mes", y="pnl", markers=True)
-        st.plotly_chart(fig, use_container_width=True)
+    st.subheader("Rendimiento por Categoría (datos del CRM)")
+    # Podríamos crear un endpoint /analytics/categorias, pero por simplicidad usamos lo que hay
+    clientes = fetch("/clientes/")
+    if clientes:
+        df_cat = pd.DataFrame([{
+            "categoria": c.get("categoria", "desconocida"),
+            "roi": float(c.get("roi_porcentaje", 0))
+        } for c in clientes])
+        if not df_cat.empty:
+            cat_roi = df_cat.groupby("categoria")["roi"].mean().reset_index()
+            fig = px.bar(cat_roi, x="categoria", y="roi", color="roi", 
+                         color_continuous_scale="RdYlGn", title="ROI Promedio por Categoría")
+            st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Metricas de Oportunidades")
+    st.subheader("Métricas de Oportunidades")
     cols = st.columns(4)
-    cols[0].metric("Tasa Ejecucion", "68%")
+    cols[0].metric("Tasa Ejecución", "68%")  # Simulado, se podría calcular
     cols[1].metric("R:B Promedio", "1:2.4")
     cols[2].metric("Win Rate", "54%")
     cols[3].metric("Profit Factor", "1.8")
 
 # ═══════════════════════════════════════
-# PAGINA: CONFIGURACION
+# NUEVA PAGINA: MERCADO EN VIVO
+# ═══════════════════════════════════════
+elif page == "📡 Mercado en Vivo":
+    st.title("📡 Datos Reales de Binance")
+
+    st.info("Esta sección muestra información en tiempo real directamente desde la API pública de Binance.")
+
+    # Selección de símbolo
+    simbolos_populares = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "PEPE"]
+    symbol = st.selectbox("Selecciona una criptomoneda", simbolos_populares, index=0)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        if st.button("Actualizar Precio"):
+            precio_data = obtener_precio_real(symbol)
+            if precio_data:
+                st.metric(f"Precio {symbol}/USDT", f"${precio_data:,.2f}")
+            else:
+                st.error("Error al obtener precio")
+
+    with col2:
+        # Mostrar ticker completo
+        ticker_data = obtener_ticker_real(symbol)
+        if ticker_data:
+            st.metric("Cambio 24h", f"{ticker_data.get('percentage', 0):.2f}%", delta_color="normal")
+            st.metric("Volumen 24h", f"${ticker_data.get('quoteVolume', 0):,.0f}")
+            st.metric("Máximo 24h", f"${ticker_data.get('high', 0):,.2f}")
+            st.metric("Mínimo 24h", f"${ticker_data.get('low', 0):,.2f}")
+
+    st.subheader("Gráfico de Velas (OHLCV)")
+    timeframe = st.selectbox("Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=4)
+    limit = st.slider("Cantidad de velas", 30, 200, 100)
+
+    velas = obtener_velas(symbol, timeframe, limit)
+    if velas:
+        df_velas = pd.DataFrame(velas)
+        df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
+        
+        fig = go.Figure(data=[go.Candlestick(
+            x=df_velas['timestamp'],
+            open=df_velas['open'],
+            high=df_velas['high'],
+            low=df_velas['low'],
+            close=df_velas['close']
+        )])
+        fig.update_layout(title=f"{symbol}/USDT - Velas {timeframe}", xaxis_title="Fecha", yaxis_title="Precio USD")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.warning("No se pudieron obtener velas. Intenta con otro símbolo o timeframe.")
+
+    # Opcional: mostrar order book? (más complejo, lo dejamos para otro momento)
+
+# ═══════════════════════════════════════
+# PAGINA: CONFIGURACION (sin cambios relevantes)
 # ═══════════════════════════════════════
 elif page == "⚙️ Configuracion":
     st.title("⚙️ Configuracion")
 
-    st.subheader("Conexion a Exchange")
+    st.subheader("Conexion a Exchange (para sincronización completa)")
     with st.form("exchange_config"):
         exchange = st.selectbox("Exchange", ["binance", "coinbase", "kraken", "bybit"])
         api_key = st.text_input("API Key", type="password")
         api_secret = st.text_input("API Secret", type="password")
 
-        st.info("Las credenciales se almacenan localmente y nunca se comparten.")
+        st.info("Las credenciales se almacenan localmente y nunca se comparten. Si solo quieres precios públicos, no necesitas API key.")
 
         if st.form_submit_button("Guardar Configuracion"):
+            # En una implementación real se guardarían en un archivo .env o en la DB de manera cifrada
             st.success("Configuracion guardada (simulado)")
 
     st.subheader("Preferencias de Alertas")
@@ -405,4 +505,4 @@ elif page == "⚙️ Configuracion":
     with col2:
         st.checkbox("Notificaciones Telegram")
         st.checkbox("Reporte diario por email")
-        st.number_input("Umbral de alerta de perdida (%)", value=20)
+        umbral = st.number_input("Umbral de alerta de perdida (%)", value=20)

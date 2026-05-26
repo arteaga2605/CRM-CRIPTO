@@ -6,6 +6,8 @@ from celery import Celery
 from sqlalchemy.orm import sessionmaker
 from app.models import engine, ClienteCripto, EstadoCliente, Tarea
 from app.services.crm_service import CRMService
+from app.services.analytics import AnalyticsService
+from app.services.exchange_sync import ExchangeConnector
 from datetime import datetime, timedelta
 
 app = Celery('crypto_crm', broker='redis://localhost:6379/0')
@@ -18,21 +20,18 @@ def verificar_alertas_programadas():
     db = SessionLocal()
     try:
         crm = CRMService(db)
-        
-        # Generar alertas inteligentes
-        from app.services.analytics import AnalyticsService
         analytics = AnalyticsService(db)
+
         alertas = analytics.alertas_inteligentes()
-        
-        # Crear tareas automaticas basadas en alertas
+
         for alerta in alertas:
             if alerta["nivel"] in ["CRITICO", "ADVERTENCIA"]:
-                # Verificar si ya existe tarea similar pendiente
                 existente = db.query(Tarea).filter(
+                    Tarea.cliente.has(symbol=alerta["symbol"]),
                     Tarea.tipo_tarea == alerta["accion_sugerida"],
                     Tarea.completada == False
-                ).join(ClienteCripto).filter(ClienteCripto.symbol == alerta["symbol"]).first()
-                
+                ).first()
+
                 if not existente:
                     crm.crear_tarea(
                         symbol=alerta["symbol"],
@@ -41,31 +40,33 @@ def verificar_alertas_programadas():
                         dias=0 if alerta["nivel"] == "CRITICO" else 1,
                         prioridad=1 if alerta["nivel"] == "CRITICO" else 2
                     )
-        
+
         return f"Alertas verificadas: {len(alertas)} generadas"
     finally:
         db.close()
 
 @app.task
 def sincronizar_precios():
-    """Actualiza precios de mercado (requiere conector configurado)"""
+    """
+    Actualiza precios de mercado para todos los clientes con cantidad > 0
+    usando la API pública de Binance.
+    """
     db = SessionLocal()
     try:
         crm = CRMService(db)
+        connector = ExchangeConnector()  # Sin API key, modo público
         clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
-        
-        # Nota: En produccion usarias CCXT aqui
-        # Por ahora, simplemente marca que necesitan actualizacion
+
+        actualizados = 0
         for cliente in clientes:
-            crm.crear_tarea(
-                symbol=cliente.symbol,
-                tipo="actualizar_precio",
-                descripcion=f"Actualizar precio de mercado de {cliente.symbol}",
-                dias=0,
-                prioridad=3
-            )
-        
-        return f"Sincronizacion programada para {len(clientes)} clientes"
+            precio = connector.obtener_precio(cliente.symbol)
+            if precio > 0:
+                crm.actualizar_precio_mercado(cliente.symbol, precio)
+                actualizados += 1
+            else:
+                print(f"No se pudo obtener precio para {cliente.symbol}")
+
+        return f"Precios actualizados para {actualizados} de {len(clientes)} clientes"
     finally:
         db.close()
 
@@ -76,8 +77,7 @@ def reporte_diario():
     try:
         crm = CRMService(db)
         resumen = crm.resumen_portafolio()
-        
-        # En produccion, enviarias esto por email/Telegram
+
         reporte = f"""
 📊 REPORTE DIARIO CRM CRYPTO
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -89,6 +89,7 @@ Tareas pendientes: {resumen['tareas_pendientes']}
 Oportunidades abiertas: {resumen['oportunidades_abiertas']}
 ━━━━━━━━━━━━━━━━━━━━━━
         """
+        # Aquí se podría enviar por email o Telegram
         return reporte
     finally:
         db.close()

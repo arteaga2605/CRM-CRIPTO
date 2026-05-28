@@ -1,30 +1,29 @@
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from datetime import datetime, timedelta
 from decimal import Decimal
 
 from app.models import (
-    ClienteCripto, Interaccion, Oportunidad, Tarea,
-    EstadoCliente, TipoInteraccion, init_db, SessionLocal
+    ClienteCripto, Interaccion, Oportunidad, Tarea, LoteCompra,
+    EstadoCliente, TipoInteraccion
 )
 
 class CRMService:
     def __init__(self, db: Session):
         self.db = db
-    
+
     # ═══════════════════════════════════════
     # GESTION DE CLIENTES (CRIPTO)
     # ═══════════════════════════════════════
-    
+
     def registrar_cliente(self, symbol: str, nombre: str = None, 
                           categoria: str = "desconocida", **kwargs) -> ClienteCripto:
-        """Dar de alta una nueva criptomoneda en el CRM"""
         symbol = symbol.upper()
         existente = self.db.query(ClienteCripto).filter_by(symbol=symbol).first()
         if existente:
             raise ValueError(f"El cliente {symbol} ya existe en el CRM")
-        
+
         cliente = ClienteCripto(
             symbol=symbol,
             nombre=nombre or symbol,
@@ -35,10 +34,10 @@ class CRMService:
         self.db.commit()
         self.db.refresh(cliente)
         return cliente
-    
+
     def obtener_cliente(self, symbol: str) -> Optional[ClienteCripto]:
         return self.db.query(ClienteCripto).filter_by(symbol=symbol.upper()).first()
-    
+
     def listar_clientes(self, estado: str = None, categoria: str = None,
                         min_roi: float = None, tags: str = None) -> List[ClienteCripto]:
         query = self.db.query(ClienteCripto)
@@ -51,16 +50,15 @@ class CRMService:
         if tags:
             query = query.filter(ClienteCripto.tags.contains(tags))
         return query.order_by(ClienteCripto.prioridad).all()
-    
+
     def actualizar_estado_cliente(self, symbol: str) -> Optional[ClienteCripto]:
-        """Recalcula el estado emocional/estrategico de la moneda"""
         cliente = self.obtener_cliente(symbol)
         if not cliente:
             return None
-        
+
         roi = float(cliente.roi_porcentaje) if cliente.roi_porcentaje else 0
         cantidad = float(cliente.cantidad_total) if cliente.cantidad_total else 0
-        
+
         if cantidad == 0:
             nuevo_estado = EstadoCliente.PROSPECTO
         elif roi > 50:
@@ -73,50 +71,57 @@ class CRMService:
             nuevo_estado = EstadoCliente.ACTIVO_COMPRA
         else:
             nuevo_estado = EstadoCliente.ACTIVO_PELIGRO
-        
+
         cliente.estado = nuevo_estado
         self.db.commit()
         return cliente
-    
+
     def actualizar_precio_mercado(self, symbol: str, precio: float) -> ClienteCripto:
-        """Actualiza precio actual y recalcula metricas de mercado"""
         cliente = self.obtener_cliente(symbol)
         if not cliente:
             raise ValueError(f"Cliente {symbol} no encontrado")
-        
+
         cliente.precio_actual = Decimal(str(precio))
         cantidad = float(cliente.cantidad_total)
-        
+
         if cantidad > 0:
             cliente.valor_mercado = Decimal(str(precio * cantidad))
             costo_total = float(cliente.cantidad_total) * float(cliente.costo_promedio)
             if costo_total > 0:
                 cliente.pnl_total = cliente.valor_mercado - Decimal(str(costo_total))
                 cliente.roi_porcentaje = (cliente.pnl_total / Decimal(str(costo_total))) * 100
-        
+
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
         return cliente
-    
+
     # ═══════════════════════════════════════
-    # INTERACCIONES (TRANSACCIONES)
+    # INTERACCIONES CON FIFO Y COMISIONES
     # ═══════════════════════════════════════
-    
-    def registrar_interaccion(self, symbol: str, tipo: str,
-                              cantidad: float, precio: float,
-                              fee: float = 0.0, exchange: str = "binance",
-                              notas: str = "") -> Interaccion:
-        """Registra compra, venta, staking... como interaccion con el cliente"""
+
+    def registrar_compra(self, symbol: str, cantidad: float, precio: float,
+                         fee: float = 0.0, exchange: str = "binance", notas: str = "") -> Dict[str, Any]:
         cliente = self.obtener_cliente(symbol)
         if not cliente:
-            raise ValueError(f"Criptomoneda {symbol} no registrada. Creala primero.")
-        
-        tipo_enum = TipoInteraccion(tipo)
+            raise ValueError(f"Criptomoneda {symbol} no registrada")
+
+        costo_total = cantidad * precio + fee
+        precio_con_fee = costo_total / cantidad
+
+        lote = LoteCompra(
+            cliente_id=cliente.id,
+            cantidad=Decimal(str(cantidad)),
+            cantidad_restante=Decimal(str(cantidad)),
+            precio_unitario=Decimal(str(precio_con_fee)),
+            exchange=exchange,
+            notas=notas
+        )
+        self.db.add(lote)
+
         monto = cantidad * precio
-        
         interaccion = Interaccion(
             cliente_id=cliente.id,
-            tipo=tipo_enum,
+            tipo=TipoInteraccion.COMPRA,
             cantidad=Decimal(str(cantidad)),
             precio_unitario=Decimal(str(precio)),
             monto_usd=Decimal(str(monto)),
@@ -124,72 +129,343 @@ class CRMService:
             exchange=exchange,
             notas=notas
         )
-        
-        # Actualizar metricas del cliente
-        self._recalcular_metricas_post_interaccion(cliente, interaccion)
-        
         self.db.add(interaccion)
+
+        total_previo = float(cliente.cantidad_total) * float(cliente.costo_promedio)
+        total_nuevo = costo_total
+        nueva_cantidad = float(cliente.cantidad_total) + cantidad
+        if nueva_cantidad > 0:
+            cliente.costo_promedio = Decimal(str((total_previo + total_nuevo) / nueva_cantidad))
+        cliente.cantidad_total = Decimal(str(nueva_cantidad))
+        cliente.inversion_total += Decimal(str(costo_total))
+
         self.db.commit()
-        self.db.refresh(interaccion)
-        return interaccion
-    
-    def _recalcular_metricas_post_interaccion(self, cliente: ClienteCripto, 
-                                               interaccion: Interaccion):
-        cantidad = float(interaccion.cantidad)
-        precio = float(interaccion.precio_unitario)
-        tipo = interaccion.tipo
-        
-        if tipo == TipoInteraccion.COMPRA:
-            total_previo = float(cliente.cantidad_total) * float(cliente.costo_promedio)
-            total_nuevo = cantidad * precio
-            nueva_cantidad = float(cliente.cantidad_total) + cantidad
-            if nueva_cantidad > 0:
-                cliente.costo_promedio = Decimal(str((total_previo + total_nuevo) / nueva_cantidad))
-            cliente.cantidad_total = Decimal(str(nueva_cantidad))
-            cliente.inversion_total += Decimal(str(cantidad * precio))
-            
-        elif tipo == TipoInteraccion.VENTA:
-            pnl = (precio - float(cliente.costo_promedio)) * cantidad
-            interaccion.pnl_realizado = Decimal(str(pnl))
-            nueva_cantidad = float(cliente.cantidad_total) - cantidad
-            cliente.cantidad_total = Decimal(str(max(0, nueva_cantidad)))
-            cliente.pnl_total += Decimal(str(pnl))
-            if nueva_cantidad <= 0:
-                cliente.costo_promedio = Decimal("0")
-                cliente.estado = EstadoCliente.CHURN
-                
-        elif tipo == TipoInteraccion.STAKING:
-            # Staking no afecta cantidad total, es solo un cambio de estado
-            pass
-            
-        elif tipo == TipoInteraccion.DIVIDENDO or tipo == TipoInteraccion.AIRDROP:
+        self.db.refresh(lote)
+        self.actualizar_estado_cliente(symbol)
+
+        return {"lote": lote, "interaccion": interaccion}
+
+    def registrar_venta_fifo(self, symbol: str, cantidad_vender: float, precio_venta: float,
+                             fee: float = 0.0, exchange: str = "binance", notas: str = "") -> Dict[str, Any]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no existe")
+
+        cantidad_vender = Decimal(str(cantidad_vender))
+        if cantidad_vender > cliente.cantidad_total:
+            raise ValueError(f"No hay suficiente cantidad para vender. Disponible: {cliente.cantidad_total}")
+
+        lotes = self.db.query(LoteCompra).filter(
+            LoteCompra.cliente_id == cliente.id,
+            LoteCompra.cantidad_restante > 0
+        ).order_by(LoteCompra.fecha_compra.asc()).all()
+
+        if not lotes:
+            raise ValueError("No hay lotes de compra para este cliente")
+
+        cantidad_a_vender = cantidad_vender
+        pnl_total = Decimal("0")
+        detalles_consumo = []
+
+        for lote in lotes:
+            if cantidad_a_vender <= 0:
+                break
+            disponible = lote.cantidad_restante
+            a_consumir = min(disponible, cantidad_a_vender)
+
+            precio_compra_con_fee = lote.precio_unitario
+            precio_venta_dec = Decimal(str(precio_venta))
+            pnl_lote = (precio_venta_dec - precio_compra_con_fee) * a_consumir
+            pnl_total += pnl_lote
+
+            lote.cantidad_restante -= a_consumir
+            cantidad_a_vender -= a_consumir
+
+            detalles_consumo.append({
+                "lote_id": lote.id,
+                "cantidad": float(a_consumir),
+                "precio_compra": float(precio_compra_con_fee),
+                "pnl_lote": float(pnl_lote)
+            })
+
+        pnl_total -= Decimal(str(fee))
+        cantidad_vendida = cantidad_vender - cantidad_a_vender
+        monto = float(cantidad_vendida) * precio_venta
+
+        interaccion = Interaccion(
+            cliente_id=cliente.id,
+            tipo=TipoInteraccion.VENTA,
+            cantidad=cantidad_vendida,
+            precio_unitario=Decimal(str(precio_venta)),
+            monto_usd=Decimal(str(monto)),
+            fee=Decimal(str(fee)),
+            exchange=exchange,
+            notas=notas,
+            pnl_realizado=pnl_total
+        )
+        self.db.add(interaccion)
+
+        nueva_cantidad = cliente.cantidad_total - cantidad_vendida
+        cliente.cantidad_total = nueva_cantidad
+        cliente.pnl_total += pnl_total
+
+        if nueva_cantidad > 0:
+            lotes_restantes = self.db.query(LoteCompra).filter(
+                LoteCompra.cliente_id == cliente.id,
+                LoteCompra.cantidad_restante > 0
+            ).all()
+            inversion_restante = sum(float(l.cantidad_restante) * float(l.precio_unitario) for l in lotes_restantes)
+            cliente.costo_promedio = Decimal(str(inversion_restante / float(nueva_cantidad))) if nueva_cantidad > 0 else Decimal("0")
+        else:
+            cliente.costo_promedio = Decimal("0")
+
+        self.db.commit()
+        self.actualizar_estado_cliente(symbol)
+
+        return {
+            "interaccion": interaccion,
+            "pnl_total": float(pnl_total),
+            "detalle_lotes": detalles_consumo
+        }
+
+    def registrar_interaccion_general(self, symbol: str, tipo: str, cantidad: float, precio: float,
+                                      fee: float = 0.0, exchange: str = "binance", notas: str = ""):
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no existe")
+        interaccion = Interaccion(
+            cliente_id=cliente.id,
+            tipo=TipoInteraccion(tipo),
+            cantidad=Decimal(str(cantidad)),
+            precio_unitario=Decimal(str(precio)),
+            monto_usd=Decimal(str(cantidad * precio)),
+            fee=Decimal(str(fee)),
+            exchange=exchange,
+            notas=notas
+        )
+        self.db.add(interaccion)
+        if tipo in ["staking", "airdrop", "dividendo"]:
             cliente.cantidad_total += Decimal(str(cantidad))
-            # Costo promedio se mantiene, es ganancia "gratis"
-    
+        self.db.commit()
+        return {"interaccion": interaccion}
+
+    # Método de fachada para compatibilidad
+    def registrar_interaccion(self, symbol: str, tipo: str, cantidad: float, precio: float,
+                              fee: float = 0.0, exchange: str = "binance", notas: str = ""):
+        return self.registrar_interaccion_general(symbol, tipo, cantidad, precio, fee, exchange, notas)
+
+    def eliminar_interaccion(self, interaccion_id: int) -> Dict[str, Any]:
+        """
+        Elimina una interacción y reconstruye completamente el estado del cliente
+        (lotes, cantidades, PnL) a partir de las interacciones restantes.
+        """
+        interaccion = self.db.query(Interaccion).filter_by(id=interaccion_id).first()
+        if not interaccion:
+            raise ValueError("Interacción no encontrada")
+
+        cliente = interaccion.cliente
+        symbol = cliente.symbol
+
+        # Guardar el tipo y cantidad para información
+        tipo_eliminado = interaccion.tipo.value
+        cantidad_eliminada = float(interaccion.cantidad)
+
+        # Eliminar la interacción
+        self.db.delete(interaccion)
+        self.db.commit()
+
+        # Reconstruir el estado del cliente desde cero con las interacciones restantes
+        self.recalcular_cliente_desde_cero(symbol)
+
+        return {
+            "mensaje": f"Interacción {interaccion_id} de tipo {tipo_eliminado} eliminada",
+            "cliente": symbol,
+            "cantidad_afectada": cantidad_eliminada
+        }
+
+    def recalcular_cliente_desde_cero(self, symbol: str):
+        """
+        Reconstruye todo el estado del cliente (lotes, cantidad_total, costo_promedio,
+        inversion_total, pnl_total) procesando todas sus interacciones en orden cronológico.
+        """
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no encontrado")
+
+        # 1. Eliminar todos los lotes existentes de este cliente
+        self.db.query(LoteCompra).filter(LoteCompra.cliente_id == cliente.id).delete()
+        self.db.commit()
+
+        # 2. Resetear campos del cliente
+        cliente.cantidad_total = Decimal("0")
+        cliente.costo_promedio = Decimal("0")
+        cliente.inversion_total = Decimal("0")
+        cliente.pnl_total = Decimal("0")
+        cliente.valor_mercado = Decimal("0")
+        cliente.roi_porcentaje = Decimal("0")
+        self.db.commit()
+
+        # 3. Obtener todas las interacciones del cliente ordenadas por timestamp
+        interacciones = self.db.query(Interaccion).filter(
+            Interaccion.cliente_id == cliente.id
+        ).order_by(Interaccion.timestamp.asc()).all()
+
+        # 4. Reprocesar cada interacción en orden
+        for inter in interacciones:
+            tipo = inter.tipo.value
+            cantidad = float(inter.cantidad)
+            precio = float(inter.precio_unitario)
+            fee = float(inter.fee)
+
+            if tipo == "compra":
+                costo_total = cantidad * precio + fee
+                precio_con_fee = costo_total / cantidad
+
+                # Crear nuevo lote
+                lote = LoteCompra(
+                    cliente_id=cliente.id,
+                    cantidad=Decimal(str(cantidad)),
+                    cantidad_restante=Decimal(str(cantidad)),
+                    precio_unitario=Decimal(str(precio_con_fee)),
+                    exchange=inter.exchange,
+                    notas=inter.notas
+                )
+                self.db.add(lote)
+
+                # Actualizar cliente
+                total_previo = float(cliente.cantidad_total) * float(cliente.costo_promedio)
+                nueva_cantidad = float(cliente.cantidad_total) + cantidad
+                if nueva_cantidad > 0:
+                    cliente.costo_promedio = Decimal(str((total_previo + costo_total) / nueva_cantidad))
+                cliente.cantidad_total = Decimal(str(nueva_cantidad))
+                cliente.inversion_total += Decimal(str(costo_total))
+
+            elif tipo == "venta":
+                # Consumir lotes FIFO
+                cantidad_vender = Decimal(str(cantidad))
+                lotes = self.db.query(LoteCompra).filter(
+                    LoteCompra.cliente_id == cliente.id,
+                    LoteCompra.cantidad_restante > 0
+                ).order_by(LoteCompra.fecha_compra.asc()).all()
+
+                cantidad_a_vender = cantidad_vender
+                pnl_total = Decimal("0")
+
+                for lote in lotes:
+                    if cantidad_a_vender <= 0:
+                        break
+                    disponible = lote.cantidad_restante
+                    a_consumir = min(disponible, cantidad_a_vender)
+
+                    pnl_lote = (Decimal(str(precio)) - lote.precio_unitario) * a_consumir
+                    pnl_total += pnl_lote
+
+                    lote.cantidad_restante -= a_consumir
+                    cantidad_a_vender -= a_consumir
+
+                pnl_total -= Decimal(str(fee))
+                cantidad_vendida = cantidad_vender - cantidad_a_vender
+
+                # Actualizar cliente
+                nueva_cantidad = float(cliente.cantidad_total) - float(cantidad_vendida)
+                cliente.cantidad_total = Decimal(str(nueva_cantidad))
+                cliente.pnl_total += pnl_total
+
+                # Recalcular costo promedio residual
+                if nueva_cantidad > 0:
+                    lotes_restantes = self.db.query(LoteCompra).filter(
+                        LoteCompra.cliente_id == cliente.id,
+                        LoteCompra.cantidad_restante > 0
+                    ).all()
+                    inversion_restante = sum(float(l.cantidad_restante) * float(l.precio_unitario) for l in lotes_restantes)
+                    cliente.costo_promedio = Decimal(str(inversion_restante / nueva_cantidad))
+                else:
+                    cliente.costo_promedio = Decimal("0")
+
+                # Actualizar el pnl_realizado de la interacción (por si acaso)
+                inter.pnl_realizado = pnl_total
+
+            else:
+                # Staking, airdrop, etc.
+                if tipo in ["staking", "airdrop", "dividendo"]:
+                    cliente.cantidad_total += Decimal(str(cantidad))
+
+        # 5. Actualizar valor de mercado y ROI con el precio actual
+        if float(cliente.cantidad_total) > 0:
+            precio_actual = float(cliente.precio_actual) if cliente.precio_actual else 0
+            cliente.valor_mercado = Decimal(str(precio_actual * float(cliente.cantidad_total)))
+            inversion_total = float(cliente.inversion_total)
+            if inversion_total > 0:
+                cliente.pnl_total = cliente.valor_mercado - Decimal(str(inversion_total))
+                cliente.roi_porcentaje = (cliente.pnl_total / Decimal(str(inversion_total))) * 100
+
+        self.db.commit()
+        self.actualizar_estado_cliente(symbol)
+
     def historial_interacciones(self, symbol: str) -> List[Interaccion]:
         cliente = self.obtener_cliente(symbol)
         if not cliente:
             return []
         return self.db.query(Interaccion).filter_by(cliente_id=cliente.id)\
                    .order_by(Interaccion.timestamp.desc()).all()
-    
+
+    def obtener_lotes_cliente(self, symbol: str) -> List[LoteCompra]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return []
+        return self.db.query(LoteCompra).filter_by(cliente_id=cliente.id)\
+                   .order_by(LoteCompra.fecha_compra.asc()).all()
+
+    def obtener_todos_lotes_con_clientes(self) -> Dict[str, List[LoteCompra]]:
+        lotes = self.db.query(LoteCompra).join(ClienteCripto).filter(LoteCompra.cantidad_restante > 0).all()
+        resultado = {}
+        for lote in lotes:
+            symbol = lote.cliente.symbol
+            if symbol not in resultado:
+                resultado[symbol] = []
+            resultado[symbol].append(lote)
+        return resultado
+
+    def calcular_pnl_fifo_para_cliente(self, symbol: str, precio_actual: float) -> Dict[str, Any]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return {"error": "Cliente no encontrado"}
+        lotes = self.db.query(LoteCompra).filter(
+            LoteCompra.cliente_id == cliente.id,
+            LoteCompra.cantidad_restante > 0
+        ).order_by(LoteCompra.fecha_compra.asc()).all()
+        
+        cantidad_total = 0.0
+        costo_total = 0.0
+        for lote in lotes:
+            cant = float(lote.cantidad_restante)
+            cantidad_total += cant
+            costo_total += cant * float(lote.precio_unitario)
+        
+        valor_actual = cantidad_total * precio_actual
+        pnl = valor_actual - costo_total
+        return {
+            "pnl_total": pnl,
+            "costo_total": costo_total,
+            "valor_actual": valor_actual,
+            "cantidad_total": cantidad_total
+        }
+
     # ═══════════════════════════════════════
-    # OPORTUNIDADES (PIPELINE DE TRADES)
+    # OPORTUNIDADES
     # ═══════════════════════════════════════
-    
     def crear_oportunidad(self, symbol: str, tipo: str,
                           entrada: float, objetivo: float, stop: float,
                           monto_planificado: float = 0,
                           confianza: int = 3, notas: str = "") -> Oportunidad:
-        """Crea un trade setup en el pipeline"""
         cliente = self.obtener_cliente(symbol)
         if not cliente:
             raise ValueError(f"Cliente {symbol} no existe")
-        
+
         riesgo = abs(entrada - stop)
         beneficio = abs(objetivo - entrada)
         rb = beneficio / riesgo if riesgo > 0 else 0
-        
+
         opp = Oportunidad(
             cliente_id=cliente.id,
             tipo=tipo,
@@ -205,7 +481,7 @@ class CRMService:
         self.db.commit()
         self.db.refresh(opp)
         return opp
-    
+
     def cerrar_oportunidad(self, opp_id: int, estado: str, pnl: float = None):
         opp = self.db.query(Oportunidad).filter_by(id=opp_id).first()
         if not opp:
@@ -216,21 +492,20 @@ class CRMService:
             opp.resultado_pnl = Decimal(str(pnl))
         self.db.commit()
         return opp
-    
+
     def oportunidades_por_estado(self, estado: str = "abierta") -> List[Oportunidad]:
         return self.db.query(Oportunidad).filter_by(estado=estado)\
                    .order_by(Oportunidad.confianza.desc()).all()
-    
+
     # ═══════════════════════════════════════
-    # TAREAS Y ALERTAS
+    # TAREAS
     # ═══════════════════════════════════════
-    
     def crear_tarea(self, symbol: str, tipo: str, descripcion: str,
                     dias: int = 1, prioridad: int = 2) -> Tarea:
         cliente = self.obtener_cliente(symbol)
         if not cliente:
             raise ValueError(f"Cliente {symbol} no existe")
-        
+
         tarea = Tarea(
             cliente_id=cliente.id,
             tipo_tarea=tipo,
@@ -242,7 +517,7 @@ class CRMService:
         self.db.commit()
         self.db.refresh(tarea)
         return tarea
-    
+
     def completar_tarea(self, tarea_id: int) -> Tarea:
         tarea = self.db.query(Tarea).filter_by(id=tarea_id).first()
         if not tarea:
@@ -251,7 +526,7 @@ class CRMService:
         tarea.fecha_completada = datetime.utcnow()
         self.db.commit()
         return tarea
-    
+
     def tareas_pendientes(self, urgentes: bool = False) -> List[Tarea]:
         query = self.db.query(Tarea).filter(
             Tarea.completada == False,
@@ -260,29 +535,28 @@ class CRMService:
         if urgentes:
             query = query.filter(Tarea.prioridad == 1)
         return query.order_by(Tarea.fecha_limite).all()
-    
+
     def tareas_proximas(self, dias: int = 3) -> List[Tarea]:
         limite = datetime.utcnow() + timedelta(days=dias)
         return self.db.query(Tarea).filter(
             Tarea.completada == False,
             Tarea.fecha_limite <= limite
         ).order_by(Tarea.fecha_limite).all()
-    
+
     # ═══════════════════════════════════════
     # ANALYTICS & REPORTES
     # ═══════════════════════════════════════
-    
     def resumen_portafolio(self) -> dict:
         clientes = self.db.query(ClienteCripto).all()
         interacciones = self.db.query(Interaccion).count()
         oportunidades_abiertas = self.db.query(Oportunidad).filter_by(estado="abierta").count()
         tareas_pend = len(self.tareas_pendientes())
-        
+
         total_invertido = sum(float(c.inversion_total) for c in clientes)
         total_valor = sum(float(c.valor_mercado) for c in clientes)
         pnl_total = total_valor - total_invertido
         roi = (pnl_total / total_invertido * 100) if total_invertido > 0 else 0
-        
+
         return {
             "total_clientes": len(clientes),
             "clientes_activos": len([c for c in clientes if float(c.cantidad_total) > 0]),
@@ -296,19 +570,19 @@ class CRMService:
             "oportunidades_abiertas": oportunidades_abiertas,
             "tareas_pendientes": tareas_pend
         }
-    
+
     def top_performers(self, limit: int = 5) -> List[ClienteCripto]:
         return self.db.query(ClienteCripto)\
                    .filter(ClienteCripto.roi_porcentaje > 0)\
                    .order_by(ClienteCripto.roi_porcentaje.desc())\
                    .limit(limit).all()
-    
+
     def peores_performers(self, limit: int = 5) -> List[ClienteCripto]:
         return self.db.query(ClienteCripto)\
                    .filter(ClienteCripto.roi_porcentaje < 0)\
                    .order_by(ClienteCripto.roi_porcentaje.asc())\
                    .limit(limit).all()
-    
+
     def clientes_dormidos(self, dias: int = 30) -> List[ClienteCripto]:
         limite = datetime.utcnow() - timedelta(days=dias)
         return self.db.query(ClienteCripto).filter(

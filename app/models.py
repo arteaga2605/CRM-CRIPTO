@@ -44,7 +44,6 @@ class ClienteCripto(Base):
     nombre = Column(String(100))
     categoria = Column(String(50), default="desconocida")
 
-    # Perfil del "cliente"
     exchange_principal = Column(String(50), default="binance")
     precio_actual = Column(Numeric(20, 8), default=0)
     cantidad_total = Column(Numeric(20, 8), default=0)
@@ -54,21 +53,19 @@ class ClienteCripto(Base):
     pnl_total = Column(Numeric(20, 2), default=0)
     roi_porcentaje = Column(Numeric(10, 2), default=0)
 
-    # Estado del "cliente"
     estado = Column(Enum(EstadoCliente), default=EstadoCliente.PROSPECTO)
-    sentiment_score = Column(Numeric(3, 2), default=0)  # -1.00 a 1.00
+    sentiment_score = Column(Numeric(3, 2), default=0)
     prioridad = Column(Integer, default=3)
 
-    # CRM clasico
     tags = Column(String(255), default="")
     notas_personal = Column(Text, default="")
     fecha_ultimo_contacto = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
 
-    # Relaciones
     interacciones = relationship("Interaccion", back_populates="cliente", cascade="all, delete-orphan")
     oportunidades = relationship("Oportunidad", back_populates="cliente", cascade="all, delete-orphan")
     tareas = relationship("Tarea", back_populates="cliente", cascade="all, delete-orphan")
+    lotes = relationship("LoteCompra", back_populates="cliente", cascade="all, delete-orphan")
 
     def __repr__(self):
         return f"<ClienteCripto({self.symbol}: {self.estado.value}, ROI={self.roi_porcentaje}%)>"
@@ -81,24 +78,39 @@ class Interaccion(Base):
     cliente_id = Column(Integer, ForeignKey("clientes_cripto.id"), nullable=False)
     tipo = Column(Enum(TipoInteraccion), nullable=False)
 
-    # Detalles de la transaccion
     monto_usd = Column(Numeric(20, 2), default=0)
     precio_unitario = Column(Numeric(20, 8), nullable=False)
     cantidad = Column(Numeric(20, 8), nullable=False)
     fee = Column(Numeric(20, 4), default=0)
     exchange = Column(String(50), default="binance")
 
-    # Contexto
     timestamp = Column(DateTime, default=datetime.utcnow)
     notas = Column(Text, default="")
 
-    # Metricas derivadas
     pnl_realizado = Column(Numeric(20, 2), default=0)
 
     cliente = relationship("ClienteCripto", back_populates="interacciones")
 
     def __repr__(self):
         return f"<Interaccion({self.tipo.value} {self.cantidad} {self.cliente.symbol})>"
+
+# ─── LOTE DE COMPRA (FIFO) ───
+class LoteCompra(Base):
+    __tablename__ = "lotes_compra"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes_cripto.id"), nullable=False)
+    cantidad = Column(Numeric(20, 8), nullable=False)
+    cantidad_restante = Column(Numeric(20, 8), nullable=False)
+    precio_unitario = Column(Numeric(20, 8), nullable=False)
+    fecha_compra = Column(DateTime, default=datetime.utcnow)
+    exchange = Column(String(50), default="binance")
+    notas = Column(Text, default="")
+
+    cliente = relationship("ClienteCripto", back_populates="lotes")
+
+    def __repr__(self):
+        return f"<LoteCompra({self.cliente.symbol} {self.cantidad}@{self.precio_unitario} restante={self.cantidad_restante})>"
 
 # ─── OPORTUNIDAD ───
 class Oportunidad(Base):
@@ -110,14 +122,12 @@ class Oportunidad(Base):
     tipo = Column(Enum(TipoOportunidad), default=TipoOportunidad.SWING)
     estado = Column(String(20), default="abierta")
 
-    # Setup del trade
     precio_entrada = Column(Numeric(20, 8))
     precio_objetivo = Column(Numeric(20, 8))
     precio_stop_loss = Column(Numeric(20, 8))
     riesgo_beneficio = Column(Numeric(5, 2))
     monto_planificado = Column(Numeric(20, 2), default=0)
 
-    # CRM
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     fecha_ejecucion = Column(DateTime)
     confianza = Column(Integer, default=3)

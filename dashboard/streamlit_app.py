@@ -8,7 +8,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
-import time
 
 API_URL = "http://localhost:8000"
 
@@ -30,6 +29,7 @@ page = st.sidebar.radio("Navegacion", [
     "💱 Interacciones",
     "🎯 Oportunidades",
     "✅ Tareas",
+    "📦 Lotes FIFO",
     "📈 Analytics",
     "📡 Mercado en Vivo",
     "⚙️ Configuracion"
@@ -50,13 +50,40 @@ def fetch(endpoint):
 def post(endpoint, data):
     try:
         r = requests.post(f"{API_URL}{endpoint}", json=data)
-        return r.json()
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en POST: {r.text[:200]}")
+            return None
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error en POST: {e}")
+        return None
+
+def put(endpoint, data):
+    try:
+        r = requests.put(f"{API_URL}{endpoint}", json=data)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en PUT: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en PUT: {e}")
+        return None
+
+def delete(endpoint):
+    try:
+        r = requests.delete(f"{API_URL}{endpoint}")
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en DELETE: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en DELETE: {e}")
         return None
 
 def obtener_precio_real(symbol):
-    """Obtiene precio actual desde Binance vía nuestra API"""
     try:
         r = requests.get(f"{API_URL}/precios/{symbol}")
         if r.status_code == 200:
@@ -88,7 +115,6 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
 # ═══════════════════════════════════════
 if page == "🏠 Dashboard":
     st.title("📊 Dashboard Principal")
-
     data = fetch("/dashboard/resumen")
     if data:
         resumen = data.get("resumen", {})
@@ -104,25 +130,19 @@ if page == "🏠 Dashboard":
         col5.metric("ROI", f"{resumen.get('roi_porcentaje', 0):.1f}%")
 
         st.divider()
-
         col_left, col_right = st.columns(2)
-
         with col_left:
             st.subheader("Distribucion del Portafolio")
             if distribucion:
                 df_dist = pd.DataFrame(distribucion)
-                fig = px.pie(df_dist, values="porcentaje", names="symbol", 
-                            hole=0.4, title="Por Valor de Mercado")
-                st.plotly_chart(fig, use_container_width=True)
-
+                fig = px.pie(df_dist, values="porcentaje", names="symbol", hole=0.4, title="Por Valor de Mercado")
+                st.plotly_chart(fig, width='stretch')
         with col_right:
             st.subheader("Top Performers")
             if top:
                 df_top = pd.DataFrame(top)
-                fig = px.bar(df_top, x="symbol", y="roi", 
-                           color="roi", color_continuous_scale="RdYlGn",
-                           title="ROI por Moneda")
-                st.plotly_chart(fig, use_container_width=True)
+                fig = px.bar(df_top, x="symbol", y="roi", color="roi", color_continuous_scale="RdYlGn", title="ROI por Moneda")
+                st.plotly_chart(fig, width='stretch')
 
         st.subheader("🔔 Alertas Inteligentes")
         if alertas:
@@ -136,80 +156,160 @@ if page == "🏠 Dashboard":
             st.success("No hay alertas activas. Todo en orden! 🎉")
 
 # ═══════════════════════════════════════
-# PAGINA: CLIENTES (igual que antes, pero añadimos botón para actualizar precio desde Binance)
+# PAGINA: CLIENTES (CON FIFO Y PnL REAL)
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
+    st.markdown("El PnL no realizado se calcula con **FIFO** (First In, First Out) e incluye comisiones.")
 
-    tab1, tab2 = st.tabs(["📋 Listado", "➕ Nuevo Cliente"])
+    clientes = fetch("/clientes/")
+    if not clientes:
+        st.warning("No hay clientes registrados. Crea uno nuevo en la pestaña '➕ Nuevo Cliente'")
+        clientes = []
 
-    with tab1:
-        clientes = fetch("/clientes/")
-        if clientes:
-            df = pd.DataFrame([{
-                "Symbol": c["symbol"],
-                "Nombre": c.get("nombre", ""),
-                "Categoria": c.get("categoria", ""),
-                "Estado": c.get("estado", ""),
-                "Cantidad": float(c.get("cantidad_total", 0)),
-                "Costo Prom": float(c.get("costo_promedio", 0)),
-                "Precio": float(c.get("precio_actual", 0)),
-                "Valor": float(c.get("valor_mercado", 0)),
-                "PnL": float(c.get("pnl_total", 0)),
-                "ROI%": float(c.get("roi_porcentaje", 0)),
-                "Prioridad": c.get("prioridad", 3),
-                "Tags": c.get("tags", "")
-            } for c in clientes])
+    if clientes:
+        if st.button("Actualizar todos los precios desde Binance"):
+            with st.spinner("Actualizando precios..."):
+                for c in clientes:
+                    precio_real = obtener_precio_real(c["symbol"])
+                    if precio_real > 0:
+                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
+                st.success("Precios actualizados")
+                st.rerun()
 
-            estado_filter = st.multiselect("Filtrar por estado", 
-                df["Estado"].unique().tolist(), default=[])
-            if estado_filter:
-                df = df[df["Estado"].isin(estado_filter)]
+        lotes_data = fetch("/lotes/all")
+        if not lotes_data:
+            lotes_data = {}
 
-            st.dataframe(df, use_container_width=True, hide_index=True)
+        df_data = []
+        for c in clientes:
+            symbol = c["symbol"]
+            cantidad_total = float(c.get("cantidad_total", 0))
+            precio_actual = float(c.get("precio_actual", 0))
+            
+            lotes_cliente = lotes_data.get(symbol, [])
+            cantidad_restante_fifo = 0.0
+            costo_total_fifo = 0.0
+            for lote in lotes_cliente:
+                cant = lote["cantidad_restante"]
+                cantidad_restante_fifo += cant
+                costo_total_fifo += cant * lote["precio_unitario"]
+            
+            valor_actual_fifo = cantidad_restante_fifo * precio_actual
+            pnl_no_realizado_fifo = valor_actual_fifo - costo_total_fifo
+            
+            costo_prom = float(c.get("costo_promedio", 0))
 
-            selected = st.selectbox("Ver detalle de", [c["symbol"] for c in clientes])
-            if selected:
-                cliente = fetch(f"/clientes/{selected}")
-                if cliente:
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        st.metric("ROI", f"{float(cliente.get('roi_porcentaje', 0)):.2f}%")
-                        st.metric("PnL", f"${float(cliente.get('pnl_total', 0)):,.2f}")
-                    with c2:
-                        st.metric("Valor Mercado", f"${float(cliente.get('valor_mercado', 0)):,.2f}")
-                        st.metric("Inversion", f"${float(cliente.get('inversion_total', 0)):,.2f}")
+            df_data.append({
+                "symbol": symbol,
+                "nombre": c.get("nombre", ""),
+                "categoria": c.get("categoria", ""),
+                "estado": c.get("estado", ""),
+                "cantidad_total": cantidad_total,
+                "costo_promedio": costo_prom,
+                "precio_actual": precio_actual,
+                "valor_mercado": float(c.get("valor_mercado", 0)),
+                "pnl_realizado": float(c.get("pnl_total", 0)),
+                "roi_realizado_pct": float(c.get("roi_porcentaje", 0)),
+                "pnl_fifo_no_realizado": pnl_no_realizado_fifo,
+                "roi_fifo_pct": (pnl_no_realizado_fifo / costo_total_fifo * 100) if costo_total_fifo > 0 else 0,
+                "prioridad": c.get("prioridad", 3),
+                "tags": c.get("tags", ""),
+                "notas": c.get("notas_personal", "")
+            })
 
-                    # Botón para actualizar precio desde Binance
-                    if st.button(f"Actualizar precio de {selected} desde Binance"):
-                        precio_real = obtener_precio_real(selected)
-                        if precio_real > 0:
-                            # Llamar a nuestro endpoint de actualización
-                            r = requests.post(f"{API_URL}/clientes/{selected}/actualizar-precio", json={"precio": precio_real})
-                            if r.status_code == 200:
-                                st.success(f"Precio de {selected} actualizado a ${precio_real}")
-                                st.rerun()
-                            else:
-                                st.error("Error al actualizar precio")
+        df = pd.DataFrame(df_data)
+
+        column_config = {
+            "symbol": st.column_config.TextColumn("Symbol", disabled=True),
+            "nombre": st.column_config.TextColumn("Nombre"),
+            "categoria": st.column_config.SelectboxColumn("Categoria", options=["layer1","layer2","defi","meme","stablecoin","nft","gaming","ai","infra","desconocida"]),
+            "estado": st.column_config.SelectboxColumn("Estado", options=["PROSPECTO","ACTIVO_COMPRA","ACTIVO_PELIGRO","DORMANTE","CHURN","VIP"]),
+            "cantidad_total": st.column_config.NumberColumn("Cantidad Total", format="%.8f"),
+            "costo_promedio": st.column_config.NumberColumn("Costo Promedio (USD)", format="$%.4f", disabled=True),
+            "precio_actual": st.column_config.NumberColumn("Precio Actual (USD)", format="$%.4f", disabled=True),
+            "valor_mercado": st.column_config.NumberColumn("Valor Mercado (USD)", format="$%.2f", disabled=True),
+            "pnl_realizado": st.column_config.NumberColumn("PnL Realizado (USD)", format="$%.2f", disabled=True),
+            "roi_realizado_pct": st.column_config.NumberColumn("ROI Realizado %", format="%.2f%%", disabled=True),
+            "pnl_fifo_no_realizado": st.column_config.NumberColumn("PnL FIFO No Realizado (USD)", format="$%.2f"),
+            "roi_fifo_pct": st.column_config.NumberColumn("ROI FIFO %", format="%.2f%%"),
+            "prioridad": st.column_config.NumberColumn("Prioridad", min_value=1, max_value=5, step=1),
+            "tags": st.column_config.TextColumn("Tags"),
+            "notas": st.column_config.TextColumn("Notas")
+        }
+
+        edited_df = st.data_editor(
+            df,
+            column_config=column_config,
+            width='stretch',
+            hide_index=True,
+            key="clientes_editor",
+            disabled=["symbol", "costo_promedio", "precio_actual", "valor_mercado", "pnl_realizado", "roi_realizado_pct", "pnl_fifo_no_realizado", "roi_fifo_pct"]
+        )
+
+        if st.button("Guardar cambios realizados"):
+            for idx, row in edited_df.iterrows():
+                original = df.iloc[idx]
+                if not row.equals(original):
+                    symbol = row["symbol"]
+                    update_data = {}
+                    for col in ["nombre", "categoria", "estado", "cantidad_total", "costo_promedio", "prioridad", "tags", "notas"]:
+                        if row[col] != original[col]:
+                            value = row[col]
+                            if col == "estado" and value:
+                                value = value.upper()
+                            update_data[col] = value
+                    if update_data:
+                        if "notas" in update_data:
+                            update_data["notas_personal"] = update_data.pop("notas")
+                        resp = put(f"/clientes/{symbol}", update_data)
+                        if resp:
+                            st.success(f"Cliente {symbol} actualizado")
                         else:
-                            st.error("No se pudo obtener precio de Binance")
+                            st.error(f"Error actualizando {symbol}")
+            st.rerun()
 
-                    st.text_area("Notas personales", 
-                               value=cliente.get("notas_personal", ""), 
-                               key=f"notas_{selected}",
-                               disabled=True)
+        st.subheader("Actualizar Precio Individual y Ver Detalle FIFO")
+        col_sel, col_btn = st.columns([3,1])
+        with col_sel:
+            selected_symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in clientes] if clientes else [])
+        with col_btn:
+            if st.button("Actualizar precio desde Binance"):
+                if selected_symbol:
+                    precio_real = obtener_precio_real(selected_symbol)
+                    if precio_real > 0:
+                        resp = post(f"/clientes/{selected_symbol}/actualizar-precio", {"precio": precio_real})
+                        if resp:
+                            st.success(f"Precio de {selected_symbol} actualizado a ${precio_real}")
+                            st.rerun()
+                        else:
+                            st.error("Error al actualizar")
+                    else:
+                        st.error("No se pudo obtener precio de Binance")
 
-    with tab2:
+        if selected_symbol:
+            st.subheader(f"📦 Lotes de {selected_symbol} (FIFO)")
+            lotes_cliente = fetch(f"/lotes/cliente/{selected_symbol}")
+            if lotes_cliente:
+                df_lotes = pd.DataFrame([{
+                    "Fecha": l["fecha_compra"],
+                    "Cantidad Inicial": float(l["cantidad"]),
+                    "Cantidad Restante": float(l["cantidad_restante"]),
+                    "Precio Compra (incluye fee)": float(l["precio_unitario"]),
+                    "Exchange": l.get("exchange", ""),
+                    "Notas": l.get("notas", "")
+                } for l in lotes_cliente])
+                st.dataframe(df_lotes, width='stretch')
+            else:
+                st.info("No hay lotes activos para este cliente.")
+
+    with st.expander("➕ Nuevo Cliente"):
         with st.form("nuevo_cliente"):
             symbol = st.text_input("Symbol (ej: BTC, ETH)").upper()
             nombre = st.text_input("Nombre completo (opcional)")
-            categoria = st.selectbox("Categoria", [
-                "layer1", "layer2", "defi", "meme", "stablecoin", 
-                "nft", "gaming", "ai", "infra", "desconocida"
-            ])
+            categoria = st.selectbox("Categoria", ["layer1","layer2","defi","meme","stablecoin","nft","gaming","ai","infra","desconocida"])
             tags = st.text_input("Tags (separados por coma)")
             notas = st.text_area("Notas personales")
-
             if st.form_submit_button("Registrar Cliente"):
                 if symbol:
                     result = post("/clientes/", {
@@ -222,32 +322,25 @@ elif page == "👥 Clientes":
                     if result:
                         st.success(f"Cliente {symbol} registrado exitosamente!")
                         st.balloons()
+                        st.rerun()
 
 # ═══════════════════════════════════════
-# PAGINA: INTERACCIONES (sin cambios)
+# PAGINA: INTERACCIONES (FIFO + BOTÓN ELIMINAR)
 # ═══════════════════════════════════════
 elif page == "💱 Interacciones":
-    st.title("💱 Registro de Interacciones")
+    st.title("💱 Registro de Interacciones (FIFO para ventas)")
 
     with st.form("nueva_interaccion"):
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
             symbol = st.text_input("Symbol del cliente").upper()
         with col2:
             tipo = st.selectbox("Tipo", ["compra", "venta", "staking", "unstaking", "dividendo", "airdrop"])
-        with col3:
-            exchange = st.text_input("Exchange", value="binance")
-
-        col4, col5, col6 = st.columns(3)
-        with col4:
-            cantidad = st.number_input("Cantidad", min_value=0.0, step=0.0001, format="%.8f")
-        with col5:
-            precio = st.number_input("Precio unitario (USD)", min_value=0.0, step=0.01)
-        with col6:
-            fee = st.number_input("Fee", min_value=0.0, step=0.01)
-
+        exchange = st.text_input("Exchange", value="binance")
+        cantidad = st.number_input("Cantidad", min_value=0.0, step=0.0001, format="%.8f")
+        precio = st.number_input("Precio unitario (USD)", min_value=0.0, step=0.01)
+        fee = st.number_input("Fee", min_value=0.0, step=0.01)
         notas = st.text_area("Notas de la interaccion")
-
         if st.form_submit_button("Registrar Interaccion"):
             if symbol and cantidad > 0 and precio > 0:
                 result = post("/interacciones/", {
@@ -261,24 +354,80 @@ elif page == "💱 Interacciones":
                 })
                 if result:
                     st.success("Interaccion registrada!")
-                    st.json(result)
+                    if tipo == "venta" and "detalle_lotes" in result:
+                        st.subheader("Detalle FIFO de la venta:")
+                        for det in result["detalle_lotes"]:
+                            st.write(f"Lote {det['lote_id']}: {det['cantidad']} unidades a precio compra ${det['precio_compra']:.2f} → PnL: ${det['pnl_lote']:.2f}")
+                        st.metric("PnL total de la venta", f"${result['pnl_total']:.2f}")
+                    st.rerun()
 
-    st.subheader("📜 Historial")
+    st.subheader("📜 Historial (puedes eliminar interacciones)")
     hist_symbol = st.text_input("Ver historial de", key="hist_symbol").upper()
     if hist_symbol:
         historial = fetch(f"/interacciones/cliente/{hist_symbol}")
         if historial:
+            # Convertir a DataFrame para mostrar
             df_hist = pd.DataFrame(historial)
-            st.dataframe(df_hist, use_container_width=True)
+            # Añadir columna con botón de eliminar
+            for idx, row in df_hist.iterrows():
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([2,1,1,1,2,2,1])
+                with col1:
+                    st.write(row.get("tipo", ""))
+                with col2:
+                    st.write(f"{float(row.get('cantidad', 0)):.8f}")
+                with col3:
+                    st.write(f"${float(row.get('precio_unitario', 0)):.2f}")
+                with col4:
+                    st.write(f"${float(row.get('monto_usd', 0)):.2f}")
+                with col5:
+                    st.write(row.get("timestamp", "")[:16])
+                with col6:
+                    st.write(f"${float(row.get('pnl_realizado', 0)):.2f}")
+                with col7:
+                    if st.button("🗑️ Eliminar", key=f"del_{row['id']}"):
+                        if st.checkbox(f"Confirmar eliminación de {row['tipo']} {row['cantidad']} @ ${row['precio_unitario']}", key=f"confirm_{row['id']}"):
+                            resp = delete(f"/interacciones/{row['id']}")
+                            if resp:
+                                st.success(f"Interacción {row['id']} eliminada")
+                                st.rerun()
+                st.divider()
+        else:
+            st.info("No hay interacciones para este cliente.")
 
 # ═══════════════════════════════════════
-# PAGINA: OPORTUNIDADES (sin cambios)
+# PAGINA: LOTES FIFO
+# ═══════════════════════════════════════
+elif page == "📦 Lotes FIFO":
+    st.title("📦 Lotes de Compra (FIFO)")
+    st.info("Cada compra genera un lote. Las ventas consumen lotes desde el más antiguo (FIFO).")
+
+    symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in fetch("/clientes/") or []])
+    if symbol:
+        lotes = fetch(f"/lotes/cliente/{symbol}")
+        if lotes:
+            df_lotes = pd.DataFrame([{
+                "ID": l["id"],
+                "Fecha": l["fecha_compra"],
+                "Cantidad Inicial": float(l["cantidad"]),
+                "Cantidad Restante": float(l["cantidad_restante"]),
+                "Precio Compra (incluye fee)": float(l["precio_unitario"]),
+                "Exchange": l.get("exchange", ""),
+                "Notas": l.get("notas", "")
+            } for l in lotes])
+            st.dataframe(df_lotes, width='stretch')
+            total_restante = df_lotes["Cantidad Restante"].sum()
+            costo_total_restante = sum(df_lotes["Cantidad Restante"] * df_lotes["Precio Compra (incluye fee)"])
+            st.metric("Cantidad total remanente", f"{total_restante:.8f}")
+            st.metric("Costo promedio ponderado restante", f"${costo_total_restante/total_restante:.4f}" if total_restante>0 else "$0")
+        else:
+            st.write("No hay lotes para este cliente.")
+
+# ═══════════════════════════════════════
+# PAGINA: OPORTUNIDADES
 # ═══════════════════════════════════════
 elif page == "🎯 Oportunidades":
     st.title("🎯 Pipeline de Oportunidades")
-
     tab1, tab2 = st.tabs(["📋 Pipeline", "➕ Nueva Oportunidad"])
-
     with tab1:
         oportunidades = fetch("/oportunidades/?estado=abierta")
         if oportunidades:
@@ -293,15 +442,11 @@ elif page == "🎯 Oportunidades":
                 "Confianza": o.get("confianza", 3),
                 "Estado": o.get("estado", "")
             } for o in oportunidades])
-            st.dataframe(df_opp, use_container_width=True)
-
+            st.dataframe(df_opp, width='stretch')
     with tab2:
         with st.form("nueva_oportunidad"):
             symbol = st.text_input("Symbol del cliente").upper()
-            tipo = st.selectbox("Tipo de oportunidad", [
-                "swing_trade", "scalp", "dca", "breakout", "reversal", "staking"
-            ])
-
+            tipo = st.selectbox("Tipo", ["swing_trade", "scalp", "dca", "breakout", "reversal", "staking"])
             col1, col2, col3 = st.columns(3)
             with col1:
                 entrada = st.number_input("Precio entrada", min_value=0.0, step=0.01)
@@ -309,41 +454,26 @@ elif page == "🎯 Oportunidades":
                 objetivo = st.number_input("Precio objetivo", min_value=0.0, step=0.01)
             with col3:
                 stop = st.number_input("Stop loss", min_value=0.0, step=0.01)
-
             monto = st.number_input("Monto planificado (USD)", min_value=0.0, step=10.0)
-            confianza = st.slider("Confianza (1-5 estrellas)", 1, 5, 3)
-            notas = st.text_area("Analisis y notas")
-
+            confianza = st.slider("Confianza (1-5)", 1, 5, 3)
+            notas = st.text_area("Analisis")
             if st.form_submit_button("Crear Oportunidad"):
-                if symbol and entrada > 0 and objetivo > 0 and stop > 0:
-                    result = post("/oportunidades/", {
-                        "cliente_symbol": symbol,
-                        "tipo": tipo,
-                        "precio_entrada": entrada,
-                        "precio_objetivo": objetivo,
-                        "precio_stop_loss": stop,
-                        "monto_planificado": monto,
-                        "confianza": confianza,
-                        "notas_analisis": notas
-                    })
+                if symbol and entrada>0 and objetivo>0 and stop>0:
+                    result = post("/oportunidades/", {"cliente_symbol": symbol, "tipo": tipo, "precio_entrada": entrada, "precio_objetivo": objetivo, "precio_stop_loss": stop, "monto_planificado": monto, "confianza": confianza, "notas_analisis": notas})
                     if result:
                         st.success("Oportunidad creada!")
-                        rr = float(result.get("riesgo_beneficio", 0))
-                        st.info(f"Riesgo:Beneficio calculado: 1:{rr:.2f}")
 
 # ═══════════════════════════════════════
-# PAGINA: TAREAS (sin cambios)
+# PAGINA: TAREAS
 # ═══════════════════════════════════════
 elif page == "✅ Tareas":
     st.title("✅ Tareas y Alertas")
-
     tab1, tab2 = st.tabs(["📋 Pendientes", "➕ Nueva Tarea"])
-
     with tab1:
         tareas = fetch("/tareas/pendientes")
         if tareas:
             for t in tareas:
-                col1, col2, col3 = st.columns([3, 1, 1])
+                col1, col2, col3 = st.columns([3,1,1])
                 with col1:
                     st.write(f"**{t.get('tipo_tarea', '')}** - {t.get('descripcion', '')}")
                     st.caption(f"Limite: {t.get('fecha_limite', '')}")
@@ -355,154 +485,76 @@ elif page == "✅ Tareas":
                         st.rerun()
                 st.divider()
         else:
-            st.success("No hay tareas pendientes! 🎉")
-
+            st.success("No hay tareas pendientes!")
     with tab2:
         with st.form("nueva_tarea"):
-            symbol = st.text_input("Symbol del cliente").upper()
-            tipo = st.selectbox("Tipo de tarea", [
-                "revisar_stop", "take_profit", "dca", "actualizar_precio",
-                "revision_estrategia", "rebalancear", "alerta_precio"
-            ])
+            symbol = st.text_input("Symbol").upper()
+            tipo = st.selectbox("Tipo", ["revisar_stop", "take_profit", "dca", "actualizar_precio", "revision_estrategia", "rebalancear", "alerta_precio"])
             descripcion = st.text_area("Descripcion")
-            dias = st.number_input("Dias para completar", min_value=0, max_value=30, value=1)
-            prioridad = st.slider("Prioridad", 1, 5, 2)
-
+            dias = st.number_input("Dias", 0,30,1)
+            prioridad = st.slider("Prioridad",1,5,2)
             if st.form_submit_button("Crear Tarea"):
                 if symbol and descripcion:
-                    result = post("/tareas/", {
-                        "cliente_symbol": symbol,
-                        "tipo_tarea": tipo,
-                        "descripcion": descripcion,
-                        "prioridad": prioridad
-                    })
+                    result = post("/tareas/", {"cliente_symbol": symbol, "tipo_tarea": tipo, "descripcion": descripcion, "prioridad": prioridad})
                     if result:
                         st.success("Tarea creada!")
 
 # ═══════════════════════════════════════
-# PAGINA: ANALYTICS (mejorado con datos reales)
+# PAGINA: ANALYTICS
 # ═══════════════════════════════════════
 elif page == "📈 Analytics":
-    st.title("📈 Analytics y Reportes")
-
-    # Obtener datos reales de analytics
+    st.title("📈 Analytics")
     data = fetch("/dashboard/resumen")
     if data:
         resumen = data.get("resumen", {})
-        st.subheader("Métricas del Portafolio")
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Invertido", f"${resumen.get('total_invertido', 0):,.2f}")
-        col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado', 0):,.2f}")
-        col3.metric("PnL Total", f"${resumen.get('pnl_total', 0):,.2f}")
-
-    # Datos de distribución desde la API
-    distribucion = fetch("/dashboard/resumen").get("distribucion", []) if data else []
+        col1.metric("Total Invertido", f"${resumen.get('total_invertido',0):,.2f}")
+        col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado',0):,.2f}")
+        col3.metric("PnL Total", f"${resumen.get('pnl_total',0):,.2f}")
+    st.subheader("Distribución del Portafolio")
+    distribucion = fetch("/dashboard/resumen").get("distribucion",[]) if data else []
     if distribucion:
-        st.subheader("Distribución del Portafolio")
         df_dist = pd.DataFrame(distribucion)
         fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composición Actual")
-        st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Rendimiento por Categoría (datos del CRM)")
-    # Podríamos crear un endpoint /analytics/categorias, pero por simplicidad usamos lo que hay
-    clientes = fetch("/clientes/")
-    if clientes:
-        df_cat = pd.DataFrame([{
-            "categoria": c.get("categoria", "desconocida"),
-            "roi": float(c.get("roi_porcentaje", 0))
-        } for c in clientes])
-        if not df_cat.empty:
-            cat_roi = df_cat.groupby("categoria")["roi"].mean().reset_index()
-            fig = px.bar(cat_roi, x="categoria", y="roi", color="roi", 
-                         color_continuous_scale="RdYlGn", title="ROI Promedio por Categoría")
-            st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Métricas de Oportunidades")
-    cols = st.columns(4)
-    cols[0].metric("Tasa Ejecución", "68%")  # Simulado, se podría calcular
-    cols[1].metric("R:B Promedio", "1:2.4")
-    cols[2].metric("Win Rate", "54%")
-    cols[3].metric("Profit Factor", "1.8")
+        st.plotly_chart(fig, width='stretch')
 
 # ═══════════════════════════════════════
-# NUEVA PAGINA: MERCADO EN VIVO
+# PAGINA: MERCADO EN VIVO
 # ═══════════════════════════════════════
 elif page == "📡 Mercado en Vivo":
     st.title("📡 Datos Reales de Binance")
-
-    st.info("Esta sección muestra información en tiempo real directamente desde la API pública de Binance.")
-
-    # Selección de símbolo
-    simbolos_populares = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "PEPE"]
-    symbol = st.selectbox("Selecciona una criptomoneda", simbolos_populares, index=0)
-
+    simbolos = ["BTC","ETH","BNB","SOL","XRP","ADA","DOGE","PEPE"]
+    symbol = st.selectbox("Selecciona", simbolos)
     col1, col2 = st.columns(2)
-
     with col1:
         if st.button("Actualizar Precio"):
-            precio_data = obtener_precio_real(symbol)
-            if precio_data:
-                st.metric(f"Precio {symbol}/USDT", f"${precio_data:,.2f}")
-            else:
-                st.error("Error al obtener precio")
-
+            precio = obtener_precio_real(symbol)
+            if precio:
+                st.metric(f"{symbol}/USDT", f"${precio:,.2f}")
     with col2:
-        # Mostrar ticker completo
-        ticker_data = obtener_ticker_real(symbol)
-        if ticker_data:
-            st.metric("Cambio 24h", f"{ticker_data.get('percentage', 0):.2f}%", delta_color="normal")
-            st.metric("Volumen 24h", f"${ticker_data.get('quoteVolume', 0):,.0f}")
-            st.metric("Máximo 24h", f"${ticker_data.get('high', 0):,.2f}")
-            st.metric("Mínimo 24h", f"${ticker_data.get('low', 0):,.2f}")
-
-    st.subheader("Gráfico de Velas (OHLCV)")
-    timeframe = st.selectbox("Timeframe", ["1m", "5m", "15m", "30m", "1h", "4h", "1d"], index=4)
-    limit = st.slider("Cantidad de velas", 30, 200, 100)
-
+        ticker = obtener_ticker_real(symbol)
+        if ticker:
+            st.metric("Cambio 24h", f"{ticker.get('percentage',0):.2f}%")
+    st.subheader("Velas")
+    timeframe = st.selectbox("Timeframe",["1m","5m","15m","30m","1h","4h","1d"], index=4)
+    limit = st.slider("Velas",30,200,100)
     velas = obtener_velas(symbol, timeframe, limit)
     if velas:
         df_velas = pd.DataFrame(velas)
         df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
-        
-        fig = go.Figure(data=[go.Candlestick(
-            x=df_velas['timestamp'],
-            open=df_velas['open'],
-            high=df_velas['high'],
-            low=df_velas['low'],
-            close=df_velas['close']
-        )])
-        fig.update_layout(title=f"{symbol}/USDT - Velas {timeframe}", xaxis_title="Fecha", yaxis_title="Precio USD")
-        st.plotly_chart(fig, use_container_width=True)
+        fig = go.Figure(data=[go.Candlestick(x=df_velas['timestamp'], open=df_velas['open'], high=df_velas['high'], low=df_velas['low'], close=df_velas['close'])])
+        st.plotly_chart(fig, width='stretch')
     else:
-        st.warning("No se pudieron obtener velas. Intenta con otro símbolo o timeframe.")
-
-    # Opcional: mostrar order book? (más complejo, lo dejamos para otro momento)
+        st.warning("No se pudieron obtener velas.")
 
 # ═══════════════════════════════════════
-# PAGINA: CONFIGURACION (sin cambios relevantes)
+# PAGINA: CONFIGURACION
 # ═══════════════════════════════════════
 elif page == "⚙️ Configuracion":
     st.title("⚙️ Configuracion")
-
-    st.subheader("Conexion a Exchange (para sincronización completa)")
+    st.info("Configuración de Exchange y alertas (simulada).")
     with st.form("exchange_config"):
-        exchange = st.selectbox("Exchange", ["binance", "coinbase", "kraken", "bybit"])
+        exchange = st.selectbox("Exchange",["binance","coinbase","kraken","bybit"])
         api_key = st.text_input("API Key", type="password")
         api_secret = st.text_input("API Secret", type="password")
-
-        st.info("Las credenciales se almacenan localmente y nunca se comparten. Si solo quieres precios públicos, no necesitas API key.")
-
-        if st.form_submit_button("Guardar Configuracion"):
-            # En una implementación real se guardarían en un archivo .env o en la DB de manera cifrada
-            st.success("Configuracion guardada (simulado)")
-
-    st.subheader("Preferencias de Alertas")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.checkbox("Alertas de stop loss")
-        st.checkbox("Alertas de take profit")
-        st.checkbox("Alertas de clientes dormidos")
-    with col2:
-        st.checkbox("Notificaciones Telegram")
-        st.checkbox("Reporte diario por email")
-        umbral = st.number_input("Umbral de alerta de perdida (%)", value=20)
+        st.form_submit_button("Guardar")

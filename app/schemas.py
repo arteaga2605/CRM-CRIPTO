@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
@@ -15,12 +15,32 @@ class ClienteCriptoCreate(ClienteCriptoBase):
     pass
 
 class ClienteCriptoUpdate(BaseModel):
+    symbol: Optional[str] = None
     nombre: Optional[str] = None
     categoria: Optional[str] = None
+    exchange_principal: Optional[str] = None
+    cantidad_total: Optional[Decimal] = None
+    costo_promedio: Optional[Decimal] = None
+    inversion_total: Optional[Decimal] = None
+    precio_actual: Optional[Decimal] = None
+    valor_mercado: Optional[Decimal] = None
+    pnl_total: Optional[Decimal] = None
+    roi_porcentaje: Optional[Decimal] = None
+    estado: Optional[str] = None
+    sentiment_score: Optional[Decimal] = None
+    prioridad: Optional[int] = Field(None, ge=1, le=5)
     tags: Optional[str] = None
     notas_personal: Optional[str] = None
-    prioridad: Optional[int] = Field(None, ge=1, le=5)
-    estado: Optional[str] = None
+    fecha_ultimo_contacto: Optional[datetime] = None
+
+    @validator('estado')
+    def validate_estado(cls, v):
+        if v is not None:
+            allowed = ['PROSPECTO', 'ACTIVO_COMPRA', 'ACTIVO_PELIGRO', 'DORMANTE', 'CHURN', 'VIP']
+            if v.upper() not in allowed:
+                raise ValueError(f'Estado inválido. Debe ser uno de {allowed}')
+            return v.upper()
+        return v
 
 class ClienteCriptoResponse(ClienteCriptoBase):
     id: int
@@ -59,6 +79,25 @@ class InteraccionResponse(InteraccionBase):
     monto_usd: Decimal
     pnl_realizado: Decimal
     timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+# ─── LOTE COMPRA SCHEMAS ───
+class LoteCompraBase(BaseModel):
+    cantidad: Decimal = Field(..., gt=0)
+    precio_unitario: Decimal = Field(..., gt=0)
+    exchange: Optional[str] = "binance"
+    notas: Optional[str] = ""
+
+class LoteCompraCreate(LoteCompraBase):
+    cliente_symbol: str
+
+class LoteCompraResponse(LoteCompraBase):
+    id: int
+    cliente_id: int
+    cantidad_restante: Decimal
+    fecha_compra: datetime
 
     class Config:
         from_attributes = True

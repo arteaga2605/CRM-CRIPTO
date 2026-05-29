@@ -38,7 +38,6 @@ page = st.sidebar.radio("Navegacion", [
 # ═══════════════════════════════════════
 # FUNCIONES AUXILIARES
 # ═══════════════════════════════════════
-
 def fetch(endpoint):
     try:
         r = requests.get(f"{API_URL}{endpoint}")
@@ -110,6 +109,14 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
         pass
     return []
 
+# Categorías actualizadas (Binance)
+CATEGORIAS = [
+    "BNB Chain", "Solana", "RWA", "MEME", "Pagos", "IA",
+    "Capa 1/Capa 2", "Fase semilla", "Launchpool", "New", "Megadrop",
+    "Juegos", "DeFi", "En observación", "Fan Token", "Infraestructura",
+    "Almacenamiento", "NFT", "Launchpad", "Yzi", "desconocida"
+]
+
 # ═══════════════════════════════════════
 # PAGINA: DASHBOARD
 # ═══════════════════════════════════════
@@ -156,7 +163,7 @@ if page == "🏠 Dashboard":
             st.success("No hay alertas activas. Todo en orden! 🎉")
 
 # ═══════════════════════════════════════
-# PAGINA: CLIENTES (CON FIFO Y PnL REAL)
+# PAGINA: CLIENTES (sin cambios relevantes)
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
@@ -223,7 +230,7 @@ elif page == "👥 Clientes":
         column_config = {
             "symbol": st.column_config.TextColumn("Symbol", disabled=True),
             "nombre": st.column_config.TextColumn("Nombre"),
-            "categoria": st.column_config.SelectboxColumn("Categoria", options=["layer1","layer2","defi","meme","stablecoin","nft","gaming","ai","infra","desconocida"]),
+            "categoria": st.column_config.SelectboxColumn("Categoria", options=CATEGORIAS),
             "estado": st.column_config.SelectboxColumn("Estado", options=["PROSPECTO","ACTIVO_COMPRA","ACTIVO_PELIGRO","DORMANTE","CHURN","VIP"]),
             "cantidad_total": st.column_config.NumberColumn("Cantidad Total", format="%.8f"),
             "costo_promedio": st.column_config.NumberColumn("Costo Promedio (USD)", format="$%.4f", disabled=True),
@@ -307,7 +314,7 @@ elif page == "👥 Clientes":
         with st.form("nuevo_cliente"):
             symbol = st.text_input("Symbol (ej: BTC, ETH)").upper()
             nombre = st.text_input("Nombre completo (opcional)")
-            categoria = st.selectbox("Categoria", ["layer1","layer2","defi","meme","stablecoin","nft","gaming","ai","infra","desconocida"])
+            categoria = st.selectbox("Categoria", CATEGORIAS)
             tags = st.text_input("Tags (separados por coma)")
             notas = st.text_area("Notas personales")
             if st.form_submit_button("Registrar Cliente"):
@@ -325,7 +332,7 @@ elif page == "👥 Clientes":
                         st.rerun()
 
 # ═══════════════════════════════════════
-# PAGINA: INTERACCIONES (FIFO + BOTÓN ELIMINAR)
+# PAGINA: INTERACCIONES
 # ═══════════════════════════════════════
 elif page == "💱 Interacciones":
     st.title("💱 Registro de Interacciones (FIFO para ventas)")
@@ -366,10 +373,7 @@ elif page == "💱 Interacciones":
     if hist_symbol:
         historial = fetch(f"/interacciones/cliente/{hist_symbol}")
         if historial:
-            # Convertir a DataFrame para mostrar
-            df_hist = pd.DataFrame(historial)
-            # Añadir columna con botón de eliminar
-            for idx, row in df_hist.iterrows():
+            for idx, row in enumerate(historial):
                 col1, col2, col3, col4, col5, col6, col7 = st.columns([2,1,1,1,2,2,1])
                 with col1:
                     st.write(row.get("tipo", ""))
@@ -393,6 +397,179 @@ elif page == "💱 Interacciones":
                 st.divider()
         else:
             st.info("No hay interacciones para este cliente.")
+
+# ═══════════════════════════════════════
+# PAGINA: OPORTUNIDADES (MEJORADA)
+# ═══════════════════════════════════════
+elif page == "🎯 Oportunidades":
+    st.title("🎯 Pipeline de Oportunidades")
+    
+    # Obtener lista de clientes para validar
+    clientes_lista = fetch("/clientes/")
+    simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
+    
+    with st.expander("➕ Nueva Oportunidad", expanded=True):
+        with st.form("nueva_oportunidad"):
+            col1, col2 = st.columns(2)
+            with col1:
+                symbol = st.text_input("Symbol del cliente").upper()
+                tipo = st.selectbox("Tipo de oportunidad", [
+                    "swing_trade", "scalp", "dca", "staking", "breakout", "reversal"
+                ])
+                entrada = st.number_input("Precio entrada (USD)", min_value=0.0, step=0.01)
+                objetivo = st.number_input("Precio objetivo (USD)", min_value=0.0, step=0.01)
+            with col2:
+                stop = st.number_input("Stop loss (USD)", min_value=0.0, step=0.01)
+                monto = st.number_input("Monto planificado (USD)", min_value=0.0, step=10.0)
+                confianza = st.slider("Confianza (1-5)", 1, 5, 3)
+                notas = st.text_area("Analisis y notas")
+            submitted = st.form_submit_button("Crear Oportunidad")
+            if submitted:
+                if not symbol:
+                    st.error("Debes ingresar un símbolo de cliente")
+                elif symbol not in simbolos_clientes:
+                    st.error(f"El cliente '{symbol}' no existe. Regístralo primero en la sección Clientes.")
+                elif entrada <= 0 or objetivo <= 0 or stop <= 0:
+                    st.error("Los precios de entrada, objetivo y stop deben ser mayores que cero.")
+                else:
+                    with st.spinner("Creando oportunidad..."):
+                        result = post("/oportunidades/", {
+                            "cliente_symbol": symbol,
+                            "tipo": tipo,
+                            "precio_entrada": entrada,
+                            "precio_objetivo": objetivo,
+                            "precio_stop_loss": stop,
+                            "monto_planificado": monto,
+                            "confianza": confianza,
+                            "notas_analisis": notas
+                        })
+                        if result:
+                            st.success("Oportunidad creada exitosamente!")
+                            st.rerun()
+                        else:
+                            st.error("No se pudo crear la oportunidad. Revisa que los datos sean correctos.")
+    
+    st.subheader("📋 Oportunidades Abiertas")
+    if st.button("Refrescar lista"):
+        st.rerun()
+    
+    oportunidades = fetch("/oportunidades/?estado=abierta")
+    if oportunidades:
+        df_opp = pd.DataFrame([{
+            "ID": o["id"],
+            "Cliente": o.get("cliente_id", ""),
+            "Tipo": o.get("tipo", ""),
+            "Entrada": float(o.get("precio_entrada", 0)),
+            "Objetivo": float(o.get("precio_objetivo", 0)),
+            "Stop": float(o.get("precio_stop_loss", 0)),
+            "R:R": float(o.get("riesgo_beneficio", 0)),
+            "Confianza": o.get("confianza", 3),
+            "Fecha Creación": o.get("fecha_creacion", "")[:16] if o.get("fecha_creacion") else "",
+            "Notas": o.get("notas_analisis", "")[:50]
+        } for o in oportunidades])
+        st.dataframe(df_opp, width='stretch')
+        
+        # Opción para cerrar oportunidad
+        st.subheader("Cerrar Oportunidad")
+        col_opp, col_estado, col_pnl, col_btn = st.columns([2,2,2,1])
+        with col_opp:
+            opp_id = st.selectbox("Seleccionar oportunidad", [o["id"] for o in oportunidades])
+        with col_estado:
+            nuevo_estado = st.selectbox("Nuevo estado", ["ejecutada", "cancelada"])
+        with col_pnl:
+            pnl_realizado = st.number_input("PnL realizado (USD)", value=0.0, step=0.01)
+        with col_btn:
+            if st.button("Cerrar"):
+                resp = requests.post(f"{API_URL}/oportunidades/{opp_id}/cerrar", params={"estado": nuevo_estado, "pnl": pnl_realizado})
+                if resp.status_code == 200:
+                    st.success("Oportunidad cerrada")
+                    st.rerun()
+                else:
+                    st.error(f"Error al cerrar: {resp.text}")
+    else:
+        st.info("No hay oportunidades abiertas. Crea una nueva usando el formulario de arriba.")
+
+# ═══════════════════════════════════════
+# PAGINA: TAREAS (MEJORADA)
+# ═══════════════════════════════════════
+elif page == "✅ Tareas":
+    st.title("✅ Tareas y Alertas")
+    
+    # Obtener lista de clientes para validar
+    clientes_lista = fetch("/clientes/")
+    simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
+    
+    with st.expander("➕ Nueva Tarea", expanded=True):
+        with st.form("nueva_tarea"):
+            symbol = st.text_input("Symbol del cliente").upper()
+            tipo = st.selectbox("Tipo de tarea", [
+                "revisar_stop", "take_profit", "dca", "actualizar_precio",
+                "revision_estrategia", "rebalancear", "alerta_precio"
+            ])
+            descripcion = st.text_area("Descripcion")
+            dias = st.number_input("Días para completar", min_value=0, max_value=30, value=1)
+            prioridad = st.slider("Prioridad (1=alta, 5=baja)", 1, 5, 2)
+            submitted = st.form_submit_button("Crear Tarea")
+            if submitted:
+                if not symbol:
+                    st.error("Debes ingresar un símbolo de cliente")
+                elif symbol not in simbolos_clientes:
+                    st.error(f"El cliente '{symbol}' no existe. Regístralo primero en la sección Clientes.")
+                elif not descripcion:
+                    st.error("La descripción es obligatoria")
+                else:
+                    with st.spinner("Creando tarea..."):
+                        result = post("/tareas/", {
+                            "cliente_symbol": symbol,
+                            "tipo_tarea": tipo,
+                            "descripcion": descripcion,
+                            "prioridad": prioridad
+                        })
+                        if result:
+                            st.success("Tarea creada exitosamente!")
+                            st.rerun()
+                        else:
+                            st.error("No se pudo crear la tarea. Revisa los datos.")
+    
+    st.subheader("📋 Tareas Pendientes")
+    if st.button("Refrescar lista"):
+        st.rerun()
+    
+    tareas_pendientes = fetch("/tareas/pendientes")
+    if tareas_pendientes:
+        for t in tareas_pendientes:
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(f"**{t.get('tipo_tarea', '')}** - {t.get('descripcion', '')}")
+                    # Mostrar cliente y fecha
+                    cliente_id = t.get('cliente_id')
+                    if cliente_id:
+                        # Podríamos obtener el símbolo, pero es más simple mostrar el ID
+                        st.caption(f"Cliente ID: {cliente_id} | Límite: {t.get('fecha_limite', '')}")
+                    else:
+                        st.caption(f"Límite: {t.get('fecha_limite', '')}")
+                    # Indicar si está vencida
+                    if t.get('fecha_limite'):
+                        fecha_limite = datetime.fromisoformat(t['fecha_limite'].replace('Z', '+00:00'))
+                        if fecha_limite < datetime.now():
+                            st.markdown("⚠️ **VENCIDA**")
+                with col2:
+                    prioridad = t.get('prioridad', 2)
+                    color = "🟢" if prioridad <= 2 else "🟡" if prioridad <= 4 else "🔴"
+                    st.write(f"{color} Prioridad {prioridad}")
+                with col3:
+                    if st.button("✅ Completar", key=f"comp_{t['id']}"):
+                        requests.post(f"{API_URL}/tareas/{t['id']}/completar")
+                        st.success("Tarea completada")
+                        st.rerun()
+                st.divider()
+    else:
+        st.success("No hay tareas pendientes. ¡Todo al día! 🎉")
+    
+    # Opcional: mostrar tareas completadas recientemente
+    with st.expander("Ver tareas completadas (últimas 10)"):
+        st.info("Funcionalidad en desarrollo: próximamente podrás ver el historial de tareas completadas.")
 
 # ═══════════════════════════════════════
 # PAGINA: LOTES FIFO
@@ -421,83 +598,6 @@ elif page == "📦 Lotes FIFO":
             st.metric("Costo promedio ponderado restante", f"${costo_total_restante/total_restante:.4f}" if total_restante>0 else "$0")
         else:
             st.write("No hay lotes para este cliente.")
-
-# ═══════════════════════════════════════
-# PAGINA: OPORTUNIDADES
-# ═══════════════════════════════════════
-elif page == "🎯 Oportunidades":
-    st.title("🎯 Pipeline de Oportunidades")
-    tab1, tab2 = st.tabs(["📋 Pipeline", "➕ Nueva Oportunidad"])
-    with tab1:
-        oportunidades = fetch("/oportunidades/?estado=abierta")
-        if oportunidades:
-            df_opp = pd.DataFrame([{
-                "ID": o["id"],
-                "Cliente": o.get("cliente_id", ""),
-                "Tipo": o.get("tipo", ""),
-                "Entrada": float(o.get("precio_entrada", 0)),
-                "Objetivo": float(o.get("precio_objetivo", 0)),
-                "Stop": float(o.get("precio_stop_loss", 0)),
-                "R:R": float(o.get("riesgo_beneficio", 0)),
-                "Confianza": o.get("confianza", 3),
-                "Estado": o.get("estado", "")
-            } for o in oportunidades])
-            st.dataframe(df_opp, width='stretch')
-    with tab2:
-        with st.form("nueva_oportunidad"):
-            symbol = st.text_input("Symbol del cliente").upper()
-            tipo = st.selectbox("Tipo", ["swing_trade", "scalp", "dca", "breakout", "reversal", "staking"])
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                entrada = st.number_input("Precio entrada", min_value=0.0, step=0.01)
-            with col2:
-                objetivo = st.number_input("Precio objetivo", min_value=0.0, step=0.01)
-            with col3:
-                stop = st.number_input("Stop loss", min_value=0.0, step=0.01)
-            monto = st.number_input("Monto planificado (USD)", min_value=0.0, step=10.0)
-            confianza = st.slider("Confianza (1-5)", 1, 5, 3)
-            notas = st.text_area("Analisis")
-            if st.form_submit_button("Crear Oportunidad"):
-                if symbol and entrada>0 and objetivo>0 and stop>0:
-                    result = post("/oportunidades/", {"cliente_symbol": symbol, "tipo": tipo, "precio_entrada": entrada, "precio_objetivo": objetivo, "precio_stop_loss": stop, "monto_planificado": monto, "confianza": confianza, "notas_analisis": notas})
-                    if result:
-                        st.success("Oportunidad creada!")
-
-# ═══════════════════════════════════════
-# PAGINA: TAREAS
-# ═══════════════════════════════════════
-elif page == "✅ Tareas":
-    st.title("✅ Tareas y Alertas")
-    tab1, tab2 = st.tabs(["📋 Pendientes", "➕ Nueva Tarea"])
-    with tab1:
-        tareas = fetch("/tareas/pendientes")
-        if tareas:
-            for t in tareas:
-                col1, col2, col3 = st.columns([3,1,1])
-                with col1:
-                    st.write(f"**{t.get('tipo_tarea', '')}** - {t.get('descripcion', '')}")
-                    st.caption(f"Limite: {t.get('fecha_limite', '')}")
-                with col2:
-                    st.badge(f"P{t.get('prioridad', 2)}")
-                with col3:
-                    if st.button("✅ Completar", key=f"comp_{t['id']}"):
-                        requests.post(f"{API_URL}/tareas/{t['id']}/completar")
-                        st.rerun()
-                st.divider()
-        else:
-            st.success("No hay tareas pendientes!")
-    with tab2:
-        with st.form("nueva_tarea"):
-            symbol = st.text_input("Symbol").upper()
-            tipo = st.selectbox("Tipo", ["revisar_stop", "take_profit", "dca", "actualizar_precio", "revision_estrategia", "rebalancear", "alerta_precio"])
-            descripcion = st.text_area("Descripcion")
-            dias = st.number_input("Dias", 0,30,1)
-            prioridad = st.slider("Prioridad",1,5,2)
-            if st.form_submit_button("Crear Tarea"):
-                if symbol and descripcion:
-                    result = post("/tareas/", {"cliente_symbol": symbol, "tipo_tarea": tipo, "descripcion": descripcion, "prioridad": prioridad})
-                    if result:
-                        st.success("Tarea creada!")
 
 # ═══════════════════════════════════════
 # PAGINA: ANALYTICS

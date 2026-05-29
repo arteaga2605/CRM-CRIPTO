@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from typing import List, Optional
 
@@ -33,9 +33,32 @@ def crear_oportunidad(opp: OportunidadCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/", response_model=List[OportunidadResponse])
-def listar_oportunidades(estado: Optional[str] = "abierta", db: Session = Depends(get_db)):
+def listar_oportunidades(
+    estado: Optional[str] = Query(None, description="Filtrar por estado (abierta, ejecutada, cancelada)"),
+    cliente_symbol: Optional[str] = Query(None, description="Filtrar por símbolo del cliente"),
+    db: Session = Depends(get_db)
+):
     crm = CRMService(db)
-    return crm.oportunidades_por_estado(estado)
+    if cliente_symbol:
+        cliente = crm.obtener_cliente(cliente_symbol)
+        if not cliente:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+        if estado:
+            return crm.oportunidades_por_estado_cliente(cliente_symbol, estado)
+        else:
+            return crm.oportunidades_por_cliente(cliente_symbol)
+    if estado:
+        return crm.oportunidades_por_estado(estado)
+    else:
+        return crm.obtener_todas_oportunidades()
+
+@router.get("/cliente/{symbol}", response_model=List[OportunidadResponse])
+def oportunidades_por_cliente(symbol: str, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    cliente = crm.obtener_cliente(symbol)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return crm.oportunidades_por_cliente(symbol)
 
 @router.post("/{opp_id}/cerrar")
 def cerrar_oportunidad(opp_id: int, estado: str, pnl: Optional[float] = None, db: Session = Depends(get_db)):

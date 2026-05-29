@@ -6,7 +6,7 @@ from decimal import Decimal
 
 from app.models import (
     ClienteCripto, Interaccion, Oportunidad, Tarea, LoteCompra,
-    EstadoCliente, TipoInteraccion
+    EstadoCliente, TipoInteraccion, TipoOportunidad
 )
 
 class CRMService:
@@ -249,32 +249,23 @@ class CRMService:
         self.db.commit()
         return {"interaccion": interaccion}
 
-    # Método de fachada para compatibilidad
     def registrar_interaccion(self, symbol: str, tipo: str, cantidad: float, precio: float,
                               fee: float = 0.0, exchange: str = "binance", notas: str = ""):
         return self.registrar_interaccion_general(symbol, tipo, cantidad, precio, fee, exchange, notas)
 
     def eliminar_interaccion(self, interaccion_id: int) -> Dict[str, Any]:
-        """
-        Elimina una interacción y reconstruye completamente el estado del cliente
-        (lotes, cantidades, PnL) a partir de las interacciones restantes.
-        """
         interaccion = self.db.query(Interaccion).filter_by(id=interaccion_id).first()
         if not interaccion:
             raise ValueError("Interacción no encontrada")
 
         cliente = interaccion.cliente
         symbol = cliente.symbol
-
-        # Guardar el tipo y cantidad para información
         tipo_eliminado = interaccion.tipo.value
         cantidad_eliminada = float(interaccion.cantidad)
 
-        # Eliminar la interacción
         self.db.delete(interaccion)
         self.db.commit()
 
-        # Reconstruir el estado del cliente desde cero con las interacciones restantes
         self.recalcular_cliente_desde_cero(symbol)
 
         return {
@@ -284,19 +275,13 @@ class CRMService:
         }
 
     def recalcular_cliente_desde_cero(self, symbol: str):
-        """
-        Reconstruye todo el estado del cliente (lotes, cantidad_total, costo_promedio,
-        inversion_total, pnl_total) procesando todas sus interacciones en orden cronológico.
-        """
         cliente = self.obtener_cliente(symbol)
         if not cliente:
             raise ValueError(f"Cliente {symbol} no encontrado")
 
-        # 1. Eliminar todos los lotes existentes de este cliente
         self.db.query(LoteCompra).filter(LoteCompra.cliente_id == cliente.id).delete()
         self.db.commit()
 
-        # 2. Resetear campos del cliente
         cliente.cantidad_total = Decimal("0")
         cliente.costo_promedio = Decimal("0")
         cliente.inversion_total = Decimal("0")
@@ -305,12 +290,10 @@ class CRMService:
         cliente.roi_porcentaje = Decimal("0")
         self.db.commit()
 
-        # 3. Obtener todas las interacciones del cliente ordenadas por timestamp
         interacciones = self.db.query(Interaccion).filter(
             Interaccion.cliente_id == cliente.id
         ).order_by(Interaccion.timestamp.asc()).all()
 
-        # 4. Reprocesar cada interacción en orden
         for inter in interacciones:
             tipo = inter.tipo.value
             cantidad = float(inter.cantidad)
@@ -321,7 +304,6 @@ class CRMService:
                 costo_total = cantidad * precio + fee
                 precio_con_fee = costo_total / cantidad
 
-                # Crear nuevo lote
                 lote = LoteCompra(
                     cliente_id=cliente.id,
                     cantidad=Decimal(str(cantidad)),
@@ -332,7 +314,6 @@ class CRMService:
                 )
                 self.db.add(lote)
 
-                # Actualizar cliente
                 total_previo = float(cliente.cantidad_total) * float(cliente.costo_promedio)
                 nueva_cantidad = float(cliente.cantidad_total) + cantidad
                 if nueva_cantidad > 0:
@@ -341,7 +322,6 @@ class CRMService:
                 cliente.inversion_total += Decimal(str(costo_total))
 
             elif tipo == "venta":
-                # Consumir lotes FIFO
                 cantidad_vender = Decimal(str(cantidad))
                 lotes = self.db.query(LoteCompra).filter(
                     LoteCompra.cliente_id == cliente.id,
@@ -366,12 +346,10 @@ class CRMService:
                 pnl_total -= Decimal(str(fee))
                 cantidad_vendida = cantidad_vender - cantidad_a_vender
 
-                # Actualizar cliente
                 nueva_cantidad = float(cliente.cantidad_total) - float(cantidad_vendida)
                 cliente.cantidad_total = Decimal(str(nueva_cantidad))
                 cliente.pnl_total += pnl_total
 
-                # Recalcular costo promedio residual
                 if nueva_cantidad > 0:
                     lotes_restantes = self.db.query(LoteCompra).filter(
                         LoteCompra.cliente_id == cliente.id,
@@ -382,15 +360,12 @@ class CRMService:
                 else:
                     cliente.costo_promedio = Decimal("0")
 
-                # Actualizar el pnl_realizado de la interacción (por si acaso)
                 inter.pnl_realizado = pnl_total
 
             else:
-                # Staking, airdrop, etc.
                 if tipo in ["staking", "airdrop", "dividendo"]:
                     cliente.cantidad_total += Decimal(str(cantidad))
 
-        # 5. Actualizar valor de mercado y ROI con el precio actual
         if float(cliente.cantidad_total) > 0:
             precio_actual = float(cliente.precio_actual) if cliente.precio_actual else 0
             cliente.valor_mercado = Decimal(str(precio_actual * float(cliente.cantidad_total)))
@@ -454,6 +429,7 @@ class CRMService:
     # ═══════════════════════════════════════
     # OPORTUNIDADES
     # ═══════════════════════════════════════
+
     def crear_oportunidad(self, symbol: str, tipo: str,
                           entrada: float, objetivo: float, stop: float,
                           monto_planificado: float = 0,
@@ -466,9 +442,17 @@ class CRMService:
         beneficio = abs(objetivo - entrada)
         rb = beneficio / riesgo if riesgo > 0 else 0
 
+        tipo_enum = None
+        for enum_member in TipoOportunidad:
+            if enum_member.value == tipo:
+                tipo_enum = enum_member
+                break
+        if not tipo_enum:
+            raise ValueError(f"Tipo de oportunidad inválido: {tipo}. Debe ser uno de: {[e.value for e in TipoOportunidad]}")
+
         opp = Oportunidad(
             cliente_id=cliente.id,
-            tipo=tipo,
+            tipo=tipo_enum,
             precio_entrada=Decimal(str(entrada)),
             precio_objetivo=Decimal(str(objetivo)),
             precio_stop_loss=Decimal(str(stop)),
@@ -497,9 +481,29 @@ class CRMService:
         return self.db.query(Oportunidad).filter_by(estado=estado)\
                    .order_by(Oportunidad.confianza.desc()).all()
 
+    def oportunidades_por_cliente(self, symbol: str) -> List[Oportunidad]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return []
+        return self.db.query(Oportunidad).filter_by(cliente_id=cliente.id)\
+                   .order_by(Oportunidad.fecha_creacion.desc()).all()
+
+    def oportunidades_por_estado_cliente(self, symbol: str, estado: str) -> List[Oportunidad]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return []
+        return self.db.query(Oportunidad).filter(
+            Oportunidad.cliente_id == cliente.id,
+            Oportunidad.estado == estado
+        ).order_by(Oportunidad.fecha_creacion.desc()).all()
+
+    def obtener_todas_oportunidades(self) -> List[Oportunidad]:
+        return self.db.query(Oportunidad).order_by(Oportunidad.fecha_creacion.desc()).all()
+
     # ═══════════════════════════════════════
     # TAREAS
     # ═══════════════════════════════════════
+
     def crear_tarea(self, symbol: str, tipo: str, descripcion: str,
                     dias: int = 1, prioridad: int = 2) -> Tarea:
         cliente = self.obtener_cliente(symbol)
@@ -528,13 +532,11 @@ class CRMService:
         return tarea
 
     def tareas_pendientes(self, urgentes: bool = False) -> List[Tarea]:
-        query = self.db.query(Tarea).filter(
-            Tarea.completada == False,
-            Tarea.fecha_limite <= datetime.utcnow()
-        )
+        """Devuelve todas las tareas no completadas, ordenadas por fecha límite (las más próximas primero)."""
+        query = self.db.query(Tarea).filter(Tarea.completada == False)
         if urgentes:
             query = query.filter(Tarea.prioridad == 1)
-        return query.order_by(Tarea.fecha_limite).all()
+        return query.order_by(Tarea.fecha_limite.asc()).all()
 
     def tareas_proximas(self, dias: int = 3) -> List[Tarea]:
         limite = datetime.utcnow() + timedelta(days=dias)
@@ -546,6 +548,7 @@ class CRMService:
     # ═══════════════════════════════════════
     # ANALYTICS & REPORTES
     # ═══════════════════════════════════════
+
     def resumen_portafolio(self) -> dict:
         clientes = self.db.query(ClienteCripto).all()
         interacciones = self.db.query(Interaccion).count()

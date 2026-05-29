@@ -1,6 +1,6 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
+from typing import List, Optional
 
 from app.models import SessionLocal
 from app.schemas import TareaCreate, TareaResponse
@@ -23,11 +23,20 @@ def crear_tarea(tarea: TareaCreate, db: Session = Depends(get_db)):
             symbol=tarea.cliente_symbol,
             tipo=tarea.tipo_tarea,
             descripcion=tarea.descripcion,
-            dias=3,  # default
+            dias=3,  # por defecto 3 días
             prioridad=tarea.prioridad
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/", response_model=List[TareaResponse])
+def listar_tareas(
+    completada: Optional[bool] = Query(None, description="Filtrar por completada (true/false)"),
+    cliente_symbol: Optional[str] = Query(None, description="Filtrar por símbolo del cliente"),
+    db: Session = Depends(get_db)
+):
+    crm = CRMService(db)
+    return crm.obtener_todas_tareas(completada=completada, cliente_symbol=cliente_symbol)
 
 @router.get("/pendientes", response_model=List[TareaResponse])
 def tareas_pendientes(db: Session = Depends(get_db)):

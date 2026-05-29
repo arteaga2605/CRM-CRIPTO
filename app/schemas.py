@@ -3,6 +3,14 @@ from typing import Optional, List
 from datetime import datetime
 from decimal import Decimal
 
+# Lista de categorías actualizada (Binance)
+CATEGORIAS_VALIDAS = [
+    "BNB Chain", "Solana", "RWA", "MEME", "Pagos", "IA",
+    "Capa 1/Capa 2", "Fase semilla", "Launchpool", "New", "Megadrop",
+    "Juegos", "DeFi", "En observación", "Fan Token", "Infraestructura",
+    "Almacenamiento", "NFT", "Launchpad", "Yzi", "desconocida"
+]
+
 # ─── CLIENTE SCHEMAS ───
 class ClienteCriptoBase(BaseModel):
     symbol: str = Field(..., min_length=1, max_length=20)
@@ -10,6 +18,13 @@ class ClienteCriptoBase(BaseModel):
     categoria: Optional[str] = "desconocida"
     tags: Optional[str] = ""
     notas_personal: Optional[str] = ""
+
+    @validator('categoria')
+    def validate_categoria(cls, v):
+        if v and v not in CATEGORIAS_VALIDAS:
+            # Permitir cualquier valor, pero sugerir las válidas
+            pass
+        return v
 
 class ClienteCriptoCreate(ClienteCriptoBase):
     pass
@@ -111,6 +126,32 @@ class OportunidadBase(BaseModel):
     monto_planificado: Optional[Decimal] = Decimal("0")
     confianza: Optional[int] = Field(3, ge=1, le=5)
     notas_analisis: Optional[str] = ""
+
+    @validator('tipo')
+    def validate_tipo(cls, v):
+        if v is not None:
+            # Mapear a los valores permitidos por el enum (en minúsculas)
+            mapping = {
+                "swing_trade": "swing_trade",
+                "scalp": "scalp",
+                "dca": "dca",
+                "staking": "staking",
+                "breakout": "breakout",
+                "reversal": "reversal",
+                # También aceptar mayúsculas si vienen del dashboard
+                "SWING": "swing_trade",
+                "SCALP": "scalp",
+                "DCA": "dca",
+                "STAKING": "staking",
+                "BREAKOUT": "breakout",
+                "REVERSAL": "reversal"
+            }
+            v_lower = v.lower()
+            if v_lower in mapping:
+                return mapping[v_lower]
+            else:
+                return v.lower()
+        return v
 
 class OportunidadCreate(OportunidadBase):
     cliente_symbol: str

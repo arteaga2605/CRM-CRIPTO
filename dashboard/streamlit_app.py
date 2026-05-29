@@ -7,7 +7,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime
+from datetime import datetime, timedelta
 
 API_URL = "http://localhost:8000"
 
@@ -118,7 +118,7 @@ CATEGORIAS = [
 ]
 
 # ═══════════════════════════════════════
-# PAGINA: DASHBOARD
+# PAGINA: DASHBOARD (con gráfico de PnL diario)
 # ═══════════════════════════════════════
 if page == "🏠 Dashboard":
     st.title("📊 Dashboard Principal")
@@ -137,6 +137,34 @@ if page == "🏠 Dashboard":
         col5.metric("ROI", f"{resumen.get('roi_porcentaje', 0):.1f}%")
 
         st.divider()
+        
+        # Gráfico de PnL diario de los últimos 7 días
+        st.subheader("📈 Evolución de PnL Realizado (Últimos 7 días)")
+        daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
+        if daily_pnl_data:
+            df_pnl = pd.DataFrame(daily_pnl_data)
+            if not df_pnl.empty:
+                # Crear gráfico de barras con colores condicionales
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=df_pnl["date"],
+                    y=df_pnl["pnl"],
+                    marker_color=['green' if val >= 0 else 'red' for val in df_pnl["pnl"]],
+                    text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
+                    textposition='auto'
+                ))
+                fig.update_layout(
+                    title="PnL Realizado por Día",
+                    xaxis_title="Fecha",
+                    yaxis_title="PnL (USD)",
+                    template="plotly_white"
+                )
+                st.plotly_chart(fig, width='stretch')
+            else:
+                st.info("No hay datos de PnL para los últimos 7 días.")
+        else:
+            st.info("No se pudieron cargar los datos de PnL diario.")
+
         col_left, col_right = st.columns(2)
         with col_left:
             st.subheader("Distribucion del Portafolio")
@@ -332,7 +360,7 @@ elif page == "👥 Clientes":
                         st.rerun()
 
 # ═══════════════════════════════════════
-# PAGINA: INTERACCIONES
+# PAGINA: INTERACCIONES (sin cambios)
 # ═══════════════════════════════════════
 elif page == "💱 Interacciones":
     st.title("💱 Registro de Interacciones (FIFO para ventas)")
@@ -399,12 +427,11 @@ elif page == "💱 Interacciones":
             st.info("No hay interacciones para este cliente.")
 
 # ═══════════════════════════════════════
-# PAGINA: OPORTUNIDADES (MEJORADA)
+# PAGINA: OPORTUNIDADES
 # ═══════════════════════════════════════
 elif page == "🎯 Oportunidades":
     st.title("🎯 Pipeline de Oportunidades")
     
-    # Obtener lista de clientes para validar
     clientes_lista = fetch("/clientes/")
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
     
@@ -469,7 +496,6 @@ elif page == "🎯 Oportunidades":
         } for o in oportunidades])
         st.dataframe(df_opp, width='stretch')
         
-        # Opción para cerrar oportunidad
         st.subheader("Cerrar Oportunidad")
         col_opp, col_estado, col_pnl, col_btn = st.columns([2,2,2,1])
         with col_opp:
@@ -490,12 +516,11 @@ elif page == "🎯 Oportunidades":
         st.info("No hay oportunidades abiertas. Crea una nueva usando el formulario de arriba.")
 
 # ═══════════════════════════════════════
-# PAGINA: TAREAS (MEJORADA)
+# PAGINA: TAREAS
 # ═══════════════════════════════════════
 elif page == "✅ Tareas":
     st.title("✅ Tareas y Alertas")
     
-    # Obtener lista de clientes para validar
     clientes_lista = fetch("/clientes/")
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
     
@@ -542,14 +567,11 @@ elif page == "✅ Tareas":
                 col1, col2, col3 = st.columns([3, 1, 1])
                 with col1:
                     st.write(f"**{t.get('tipo_tarea', '')}** - {t.get('descripcion', '')}")
-                    # Mostrar cliente y fecha
                     cliente_id = t.get('cliente_id')
                     if cliente_id:
-                        # Podríamos obtener el símbolo, pero es más simple mostrar el ID
                         st.caption(f"Cliente ID: {cliente_id} | Límite: {t.get('fecha_limite', '')}")
                     else:
                         st.caption(f"Límite: {t.get('fecha_limite', '')}")
-                    # Indicar si está vencida
                     if t.get('fecha_limite'):
                         fecha_limite = datetime.fromisoformat(t['fecha_limite'].replace('Z', '+00:00'))
                         if fecha_limite < datetime.now():
@@ -567,7 +589,6 @@ elif page == "✅ Tareas":
     else:
         st.success("No hay tareas pendientes. ¡Todo al día! 🎉")
     
-    # Opcional: mostrar tareas completadas recientemente
     with st.expander("Ver tareas completadas (últimas 10)"):
         st.info("Funcionalidad en desarrollo: próximamente podrás ver el historial de tareas completadas.")
 
@@ -617,35 +638,118 @@ elif page == "📈 Analytics":
         df_dist = pd.DataFrame(distribucion)
         fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composición Actual")
         st.plotly_chart(fig, width='stretch')
+    
+    # Agregar gráfico de PnL diario también aquí (opcional)
+    st.subheader("Evolución de PnL Realizado (Últimos 7 días)")
+    daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
+    if daily_pnl_data:
+        df_pnl = pd.DataFrame(daily_pnl_data)
+        if not df_pnl.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=df_pnl["date"],
+                y=df_pnl["pnl"],
+                marker_color=['green' if val >= 0 else 'red' for val in df_pnl["pnl"]],
+                text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
+                textposition='auto'
+            ))
+            fig.update_layout(title="PnL Realizado por Día", xaxis_title="Fecha", yaxis_title="PnL (USD)")
+            st.plotly_chart(fig, width='stretch')
+        else:
+            st.info("No hay datos de PnL para los últimos 7 días.")
+    else:
+        st.info("No se pudieron cargar los datos de PnL diario.")
 
 # ═══════════════════════════════════════
-# PAGINA: MERCADO EN VIVO
+# PAGINA: MERCADO EN VIVO (con tendencia y sentimiento)
 # ═══════════════════════════════════════
 elif page == "📡 Mercado en Vivo":
     st.title("📡 Datos Reales de Binance")
-    simbolos = ["BTC","ETH","BNB","SOL","XRP","ADA","DOGE","PEPE"]
-    symbol = st.selectbox("Selecciona", simbolos)
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("Actualizar Precio"):
-            precio = obtener_precio_real(symbol)
-            if precio:
-                st.metric(f"{symbol}/USDT", f"${precio:,.2f}")
-    with col2:
-        ticker = obtener_ticker_real(symbol)
-        if ticker:
-            st.metric("Cambio 24h", f"{ticker.get('percentage',0):.2f}%")
-    st.subheader("Velas")
-    timeframe = st.selectbox("Timeframe",["1m","5m","15m","30m","1h","4h","1d"], index=4)
-    limit = st.slider("Velas",30,200,100)
-    velas = obtener_velas(symbol, timeframe, limit)
-    if velas:
-        df_velas = pd.DataFrame(velas)
-        df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
-        fig = go.Figure(data=[go.Candlestick(x=df_velas['timestamp'], open=df_velas['open'], high=df_velas['high'], low=df_velas['low'], close=df_velas['close'])])
-        st.plotly_chart(fig, width='stretch')
+    st.markdown("Tendencias y sentimiento del mercado en tiempo real")
+    
+    simbolos = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "PEPE"]
+    symbol = st.selectbox("Selecciona una criptomoneda", simbolos, index=0)
+    
+    ticker = obtener_ticker_real(symbol)
+    if ticker:
+        cambio_pct = ticker.get("percentage", 0.0)
+        precio_actual = ticker.get("last", 0)
+        
+        # Flecha de tendencia
+        if cambio_pct > 0.5:
+            arrow = "🔼"
+            tendencia = "Alcista fuerte"
+        elif cambio_pct > 0:
+            arrow = "↗️"
+            tendencia = "Ligeramente alcista"
+        elif cambio_pct < -0.5:
+            arrow = "🔽"
+            tendencia = "Bajista fuerte"
+        elif cambio_pct < 0:
+            arrow = "↘️"
+            tendencia = "Ligeramente bajista"
+        else:
+            arrow = "⏸️"
+            tendencia = "Neutral"
+        
+        # Sentimiento del mercado basado en el cambio porcentual
+        if cambio_pct > 3:
+            sentimiento = "🟢 Muy alcista / Euforia"
+        elif cambio_pct > 1:
+            sentimiento = "🟢 Alcista / Confianza"
+        elif cambio_pct > 0.2:
+            sentimiento = "🟢 Ligeramente alcista"
+        elif cambio_pct > -0.2:
+            sentimiento = "⚪ Neutral / Lateral"
+        elif cambio_pct > -1:
+            sentimiento = "🔴 Ligeramente bajista"
+        elif cambio_pct > -3:
+            sentimiento = "🔴 Bajista / Preocupación"
+        else:
+            sentimiento = "🔴 Muy bajista / Pánico"
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(f"{symbol}/USDT", f"${precio_actual:,.4f}", delta=f"{cambio_pct:.2f}%")
+        with col2:
+            st.markdown(f"### Tendencia: {arrow} {tendencia}")
+        with col3:
+            st.markdown(f"### Sentimiento: {sentimiento}")
+        
+        st.divider()
+        
+        # Mostrar más datos del ticker
+        st.subheader("Detalles del Ticker")
+        detalle_col1, detalle_col2 = st.columns(2)
+        with detalle_col1:
+            st.metric("Máximo 24h", f"${ticker.get('high', 0):,.4f}")
+            st.metric("Mínimo 24h", f"${ticker.get('low', 0):,.4f}")
+            st.metric("Volumen (24h)", f"{ticker.get('volume', 0):,.2f}")
+        with detalle_col2:
+            st.metric("Ask", f"${ticker.get('ask', 0):,.4f}")
+            st.metric("Bid", f"${ticker.get('bid', 0):,.4f}")
+            st.metric("Última actualización", ticker.get('timestamp', '')[:19])
+        
+        st.subheader("Gráfico de Velas (OHLCV)")
+        timeframe = st.selectbox("Timeframe", ["1m","5m","15m","30m","1h","4h","1d"], index=4)
+        limit = st.slider("Cantidad de velas", 30, 200, 100)
+        velas = obtener_velas(symbol, timeframe, limit)
+        if velas:
+            df_velas = pd.DataFrame(velas)
+            df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
+            fig = go.Figure(data=[go.Candlestick(
+                x=df_velas['timestamp'],
+                open=df_velas['open'],
+                high=df_velas['high'],
+                low=df_velas['low'],
+                close=df_velas['close']
+            )])
+            fig.update_layout(title=f"{symbol}/USDT - Velas {timeframe}", xaxis_title="Fecha", yaxis_title="Precio USD")
+            st.plotly_chart(fig, width='stretch')
+        else:
+            st.warning("No se pudieron obtener velas para este símbolo.")
     else:
-        st.warning("No se pudieron obtener velas.")
+        st.error("No se pudo obtener información del ticker. Intenta con otro símbolo.")
 
 # ═══════════════════════════════════════
 # PAGINA: CONFIGURACION
@@ -654,7 +758,7 @@ elif page == "⚙️ Configuracion":
     st.title("⚙️ Configuracion")
     st.info("Configuración de Exchange y alertas (simulada).")
     with st.form("exchange_config"):
-        exchange = st.selectbox("Exchange",["binance","coinbase","kraken","bybit"])
+        exchange = st.selectbox("Exchange", ["binance", "coinbase", "kraken", "bybit"])
         api_key = st.text_input("API Key", type="password")
         api_secret = st.text_input("API Secret", type="password")
         st.form_submit_button("Guardar")

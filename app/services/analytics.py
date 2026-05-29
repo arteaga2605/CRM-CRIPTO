@@ -5,7 +5,7 @@ Genera reportes, metricas y insights.
 from typing import Dict, List, Tuple
 from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, extract
 from decimal import Decimal
 
 from app.models import ClienteCripto, Interaccion, Oportunidad, Tarea, TipoInteraccion
@@ -15,7 +15,6 @@ class AnalyticsService:
         self.db = db
 
     def rendimiento_por_categoria(self) -> List[Dict]:
-        """Agrupa rendimiento por categoria de moneda"""
         result = self.db.query(
             ClienteCripto.categoria,
             func.count(ClienteCripto.id).label('count'),
@@ -34,9 +33,7 @@ class AnalyticsService:
         ]
 
     def evolucion_pnl_mensual(self, meses: int = 6) -> List[Dict]:
-        """Evolucion de PnL realizado por mes"""
         desde = datetime.utcnow() - timedelta(days=meses*30)
-
         result = self.db.query(
             func.strftime('%Y-%m', Interaccion.timestamp).label('mes'),
             func.sum(Interaccion.pnl_realizado).label('pnl')
@@ -51,16 +48,13 @@ class AnalyticsService:
         ]
 
     def metricas_oportunidades(self) -> Dict:
-        """Metricas del pipeline de oportunidades"""
         total = self.db.query(Oportunidad).count()
         abiertas = self.db.query(Oportunidad).filter_by(estado="abierta").count()
         ejecutadas = self.db.query(Oportunidad).filter_by(estado="ejecutada").count()
         canceladas = self.db.query(Oportunidad).filter_by(estado="cancelada").count()
-
         pnl_opps = self.db.query(func.sum(Oportunidad.resultado_pnl)).filter(
             Oportunidad.estado == "ejecutada"
         ).scalar()
-
         avg_rr = self.db.query(func.avg(Oportunidad.riesgo_beneficio)).filter(
             Oportunidad.estado == "ejecutada"
         ).scalar()
@@ -76,15 +70,12 @@ class AnalyticsService:
         }
 
     def eficiencia_tareas(self, dias: int = 30) -> Dict:
-        """Metricas de productividad en tareas"""
         desde = datetime.utcnow() - timedelta(days=dias)
-
         total = self.db.query(Tarea).filter(Tarea.fecha_creacion >= desde).count()
         completadas = self.db.query(Tarea).filter(
             Tarea.completada == True,
             Tarea.fecha_creacion >= desde
         ).count()
-
         return {
             "tareas_creadas": total,
             "tareas_completadas": completadas,
@@ -93,13 +84,10 @@ class AnalyticsService:
         }
 
     def distribucion_portafolio(self) -> List[Dict]:
-        """Distribucion por valor de mercado"""
         clientes = self.db.query(ClienteCripto).filter(
             ClienteCripto.cantidad_total > 0
         ).all()
-
         total_valor = sum(float(c.valor_mercado) for c in clientes)
-
         return [
             {
                 "symbol": c.symbol,
@@ -111,10 +99,7 @@ class AnalyticsService:
         ]
 
     def alertas_inteligentes(self) -> List[Dict]:
-        """Genera alertas basadas en reglas de negocio"""
         alertas = []
-
-        # 1. Clientes en peligro (>20% perdida)
         peligro = self.db.query(ClienteCripto).filter(
             ClienteCripto.roi_porcentaje < -20,
             ClienteCripto.cantidad_total > 0
@@ -127,8 +112,6 @@ class AnalyticsService:
                 "mensaje": f"{c.symbol} con perdida del {float(c.roi_porcentaje):.1f}%. Considerar stop o promediar.",
                 "accion_sugerida": "revisar_stop_loss"
             })
-
-        # 2. Clientes VIP (>50% ganancia sin accion)
         vip = self.db.query(ClienteCripto).filter(
             ClienteCripto.roi_porcentaje > 50,
             ClienteCripto.cantidad_total > 0
@@ -141,8 +124,6 @@ class AnalyticsService:
                 "mensaje": f"{c.symbol} ganando {float(c.roi_porcentaje):.1f}%. Considerar venta parcial.",
                 "accion_sugerida": "vender_50_porciento"
             })
-
-        # 3. Concentracion excesiva (>30% en una moneda)
         dist = self.distribucion_portafolio()
         if dist:
             max_pos = dist[0]
@@ -154,8 +135,6 @@ class AnalyticsService:
                     "mensaje": f"{max_pos['symbol']} representa {max_pos['porcentaje']}% del portafolio. Diversificar.",
                     "accion_sugerida": "rebalancear"
                 })
-
-        # 4. Clientes dormidos (sin interaccion en 30 dias)
         desde = datetime.utcnow() - timedelta(days=30)
         dormidos = self.db.query(ClienteCripto).filter(
             ClienteCripto.fecha_ultimo_contacto < desde,
@@ -169,5 +148,36 @@ class AnalyticsService:
                 "mensaje": f"{c.symbol} sin movimiento en 30+ dias. Revisar si mantener.",
                 "accion_sugerida": "revision_estrategia"
             })
-
         return alertas
+
+    def daily_pnl(self, days: int = 7) -> List[Dict]:
+        """
+        Retorna el PnL realizado por día (solo ventas) para los últimos 'days' días.
+        """
+        start_date = datetime.utcnow() - timedelta(days=days)
+        # Agrupar por día (fecha sin hora)
+        results = self.db.query(
+            func.date(Interaccion.timestamp).label('date'),
+            func.sum(Interaccion.pnl_realizado).label('total_pnl')
+        ).filter(
+            Interaccion.tipo == TipoInteraccion.VENTA,
+            Interaccion.timestamp >= start_date
+        ).group_by(func.date(Interaccion.timestamp)).order_by(func.date(Interaccion.timestamp)).all()
+        
+        # Llenar los días que no tienen datos con 0
+        daily_data = {}
+        for r in results:
+            daily_data[r.date] = float(r.total_pnl)
+        
+        # Crear lista de los últimos 'days' días (incluyendo hoy)
+        today = datetime.utcnow().date()
+        pnl_list = []
+        for i in range(days - 1, -1, -1):
+            date = today - timedelta(days=i)
+            date_str = date.strftime("%Y-%m-%d")
+            pnl = daily_data.get(date_str, 0.0)
+            pnl_list.append({
+                "date": date_str,
+                "pnl": pnl
+            })
+        return pnl_list

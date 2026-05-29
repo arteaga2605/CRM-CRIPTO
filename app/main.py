@@ -5,11 +5,12 @@ from sqlalchemy.orm import Session
 from app.models import init_db, SessionLocal
 from app.api import clientes, interacciones, oportunidades, tareas, lotes
 from app.services.exchange_sync import ExchangeConnector
+from app.services.analytics import AnalyticsService
 
 app = FastAPI(
     title="Crypto CRM",
     description="Tratando criptomonedas como clientes - Sistema de gestion de portafolio",
-    version="1.0.0"
+    version="2.0.0"
 )
 
 app.add_middleware(
@@ -47,7 +48,8 @@ def root():
             "tareas": "/tareas",
             "lotes": "/lotes/cliente/{symbol}",
             "precios": "/precios/{symbol}",
-            "ticker": "/ticker/{symbol}"
+            "ticker": "/ticker/{symbol}",
+            "daily-pnl": "/analytics/daily-pnl"
         }
     }
 
@@ -86,3 +88,8 @@ def resumen_dashboard(db: Session = Depends(get_db)):
         "alertas": analytics.alertas_inteligentes(),
         "distribucion": analytics.distribucion_portafolio()[:5]
     }
+
+@app.get("/analytics/daily-pnl")
+def get_daily_pnl(days: int = 7, db: Session = Depends(get_db)):
+    analytics = AnalyticsService(db)
+    return analytics.daily_pnl(days)

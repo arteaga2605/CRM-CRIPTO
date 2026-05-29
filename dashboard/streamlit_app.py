@@ -9,6 +9,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
+import time
+from scipy.stats import pearsonr
 
 API_URL = "http://localhost:8000"
 
@@ -121,11 +123,27 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
         pass
     return []
 
+# ═══════════════════════════════════════
+# FUNCIONES PARA TENDENCIAS Y CORRELACIONES
+# ═══════════════════════════════════════
+@st.cache_data(ttl=3600)  # cache por 1 hora
+def obtener_simbolos_binance():
+    """Obtiene la lista de símbolos disponibles en Binance (pares USDT)."""
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            symbols = [s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT"]
+            return symbols
+        else:
+            return []
+    except:
+        return []
+
+@st.cache_data(ttl=300)  # cache por 5 minutos
 def obtener_tendencias_coingecko():
-    """
-    Obtiene las criptomonedas con mayor tendencia (más buscadas) desde CoinGecko.
-    Endpoint público sin necesidad de API key.
-    """
+    """Obtiene las criptomonedas con mayor tendencia desde CoinGecko."""
     url = "https://api.coingecko.com/api/v3/search/trending"
     try:
         r = requests.get(url, timeout=10)
@@ -135,22 +153,70 @@ def obtener_tendencias_coingecko():
                 trending = []
                 for coin in data["coins"]:
                     item = coin["item"]
+                    # Obtener cambio de precio 24h desde CoinGecko (no viene en trending, hay que hacer otra llamada)
+                    # Por simplicidad, lo dejamos como None y luego lo obtenemos con otra función
                     trending.append({
-                        "Token": item.get("symbol", "").upper(),
-                        "Nombre": item.get("name", ""),
-                        "Puntuación": item.get("score", 0),
-                        "Precio (USD)": item.get("price_btc", 0) * 30000,  # Conversión aprox BTC a USD
-                        "Market Cap Rank": item.get("market_cap_rank", 0),
-                        "Logo": item.get("thumb", "")
+                        "id": item.get("id", ""),
+                        "symbol": item.get("symbol", "").upper(),
+                        "name": item.get("name", ""),
+                        "score": item.get("score", 0),
+                        "market_cap_rank": item.get("market_cap_rank", 0),
+                        "thumb": item.get("thumb", "")
                     })
                 return trending
             else:
                 return None
         else:
-            st.error(f"Error {r.status_code} al obtener tendencias de CoinGecko")
             return None
     except Exception as e:
         st.error(f"Error conectando a CoinGecko: {e}")
+        return None
+
+@st.cache_data(ttl=300)
+def obtener_precio_actual_coingecko(coin_id):
+    """Obtiene el precio actual y cambio 24h de una moneda por su ID de CoinGecko."""
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if coin_id in data:
+                return {
+                    "price": data[coin_id].get("usd", 0),
+                    "change_24h": data[coin_id].get("usd_24h_change", 0)
+                }
+        return {"price": 0, "change_24h": 0}
+    except:
+        return {"price": 0, "change_24h": 0}
+
+@st.cache_data(ttl=3600)
+def obtener_historicos_coingecko(coin_id, days=7):
+    """Obtiene precios históricos de los últimos 'days' días en USD."""
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            prices = data.get("prices", [])
+            # Extraer solo el precio de cierre (último del día)
+            # Coingecko devuelve [timestamp, price]
+            df = pd.DataFrame(prices, columns=["timestamp", "price"])
+            df["date"] = pd.to_datetime(df["timestamp"], unit='ms').dt.date
+            daily_prices = df.groupby("date")["price"].last().reset_index()
+            return daily_prices["price"].tolist()
+        else:
+            return []
+    except:
+        return []
+
+def calcular_correlacion_con_btc(token_prices, btc_prices):
+    """Calcula correlación de Pearson entre dos listas de precios."""
+    if len(token_prices) < 2 or len(btc_prices) < 2:
+        return None
+    try:
+        corr, _ = pearsonr(token_prices, btc_prices)
+        return corr
+    except:
         return None
 
 # Categorías actualizadas (Binance)
@@ -840,43 +906,140 @@ elif page == "📡 Mercado en Vivo":
         st.error("No se pudo obtener información del ticker. Intenta con otro símbolo.")
 
 # ═══════════════════════════════════════
-# NUEVA PAGINA: TENDENCIAS DE MERCADO (CoinGecko Trending)
+# PÁGINA: TENDENCIAS DE MERCADO (MEJORADA CON BINANCE, TENDENCIA Y CORRELACIÓN)
 # ═══════════════════════════════════════
 elif page == "🔥 Tendencias de Mercado":
     st.title("🔥 Tendencias de Mercado (CoinGecko)")
     st.markdown("Criptomonedas más buscadas y con mayor tendencia actualmente.")
     
     if st.button("🔄 Actualizar datos"):
+        # Limpiar caché de funciones que tienen @st.cache_data
+        st.cache_data.clear()
         st.rerun()
     
-    with st.spinner("Cargando tendencias desde CoinGecko..."):
+    with st.spinner("Cargando datos de tendencias, Binance y correlaciones..."):
+        # Obtener lista de símbolos de Binance
+        binance_symbols = obtener_simbolos_binance()
+        # Obtener tendencias de CoinGecko
         tendencias = obtener_tendencias_coingecko()
-    
-    if tendencias:
-        df_trend = pd.DataFrame(tendencias)
-        if not df_trend.empty:
-            # Mostrar tabla
-            st.subheader("🏆 Top 7 Tendencias")
-            # Ordenar por puntuación (score)
-            df_trend = df_trend.sort_values("Puntuación", ascending=False)
-            st.dataframe(df_trend[["Token", "Nombre", "Puntuación", "Market Cap Rank"]], width='stretch')
+        
+        if tendencias:
+            # Obtener datos de precios y correlación para cada token
+            df_list = []
+            progress_bar = st.progress(0)
+            for i, token in enumerate(tendencias):
+                # Información básica
+                token_id = token["id"]
+                symbol = token["symbol"]
+                name = token["name"]
+                score = token["score"]
+                market_rank = token["market_cap_rank"]
+                thumb = token["thumb"]
+                
+                # Verificar si está en Binance
+                in_binance = f"{symbol}USDT" in binance_symbols
+                
+                # Obtener cambio de precio 24h
+                price_data = obtener_precio_actual_coingecko(token_id)
+                change_24h = price_data["change_24h"]
+                
+                # Determinar tendencia alcista/bajista
+                if change_24h > 1:
+                    trend_icon = "🟢"
+                    trend_text = "Alcista fuerte"
+                elif change_24h > 0:
+                    trend_icon = "🟢"
+                    trend_text = "Alcista"
+                elif change_24h > -1:
+                    trend_icon = "🔴"
+                    trend_text = "Bajista"
+                else:
+                    trend_icon = "🔴"
+                    trend_text = "Bajista fuerte"
+                
+                # Calcular correlación con BTC (si no es BTC)
+                correlation = None
+                if symbol != "BTC" and token_id:
+                    # Obtener precios históricos del token y BTC
+                    token_prices = obtener_historicos_coingecko(token_id, days=7)
+                    btc_prices = obtener_historicos_coingecko("bitcoin", days=7)
+                    if token_prices and btc_prices:
+                        # Asegurar misma longitud
+                        min_len = min(len(token_prices), len(btc_prices))
+                        if min_len >= 3:  # mínimo 3 puntos para correlación
+                            corr = calcular_correlacion_con_btc(token_prices[:min_len], btc_prices[:min_len])
+                            if corr is not None:
+                                if corr > 0.5:
+                                    correlation = f"🟢 Positiva ({corr:.2f})"
+                                elif corr < -0.5:
+                                    correlation = f"🔴 Negativa ({corr:.2f})"
+                                else:
+                                    correlation = f"⚪ Neutra ({corr:.2f})"
+                            else:
+                                correlation = "⚪ No disponible"
+                        else:
+                            correlation = "⚪ Datos insuficientes"
+                    else:
+                        correlation = "⚪ Sin datos"
+                elif symbol == "BTC":
+                    correlation = "⚪ Referencia"
+                
+                df_list.append({
+                    "Token": symbol,
+                    "Nombre": name,
+                    "Score": score,
+                    "Market Cap Rank": market_rank,
+                    "En Binance": "✅" if in_binance else "❌",
+                    "Cambio 24h (%)": round(change_24h, 2),
+                    "Tendencia": f"{trend_icon} {trend_text}",
+                    "Correlación BTC": correlation,
+                    "Logo": thumb,
+                    "ID": token_id
+                })
+                progress_bar.progress((i + 1) / len(tendencias))
             
-            # Gráfico de barras
-            fig = px.bar(df_trend, x="Token", y="Puntuación", color="Puntuación",
-                         color_continuous_scale="Blues", title="Puntuación de Tendencia por Token")
-            st.plotly_chart(fig, width='stretch')
-            
-            # Mostrar logos (opcional)
-            st.subheader("Logos de los tokens en tendencia")
-            cols = st.columns(5)
-            for i, row in df_trend.head(5).iterrows():
-                with cols[i % 5]:
-                    if row.get("Logo"):
-                        st.image(row["Logo"], caption=row["Token"], width=60)
+            df_trend = pd.DataFrame(df_list)
+            if not df_trend.empty:
+                # Mostrar tabla principal
+                st.subheader("🏆 Top Tendencias con indicadores")
+                display_cols = ["Token", "Nombre", "Score", "Market Cap Rank", "En Binance", "Cambio 24h (%)", "Tendencia", "Correlación BTC"]
+                st.dataframe(df_trend[display_cols], width='stretch')
+                
+                # Gráfico de puntuación de tendencia
+                st.subheader("📊 Puntuación de Tendencia por Token")
+                fig = px.bar(df_trend, x="Token", y="Score", color="Score",
+                             color_continuous_scale="Blues", title="Score de Tendencia")
+                st.plotly_chart(fig, width='stretch')
+                
+                # Gráfico de cambio 24h (colores rojo/verde)
+                st.subheader("📈 Cambio de Precio en 24h")
+                fig2 = go.Figure()
+                colors = ['green' if x > 0 else 'red' for x in df_trend["Cambio 24h (%)"]]
+                fig2.add_trace(go.Bar(
+                    x=df_trend["Token"],
+                    y=df_trend["Cambio 24h (%)"],
+                    marker_color=colors,
+                    text=df_trend["Cambio 24h (%)"].apply(lambda x: f"{x:.2f}%"),
+                    textposition='auto'
+                ))
+                fig2.update_layout(title="Variación 24h por Token", xaxis_title="Token", yaxis_title="Cambio (%)")
+                st.plotly_chart(fig2, width='stretch')
+                
+                # Mostrar logos de los tokens
+                st.subheader("🖼️ Logos de tokens en tendencia")
+                cols = st.columns(5)
+                for i, row in df_trend.head(10).iterrows():
+                    with cols[i % 5]:
+                        if row["Logo"]:
+                            st.image(row["Logo"], caption=row["Token"], width=60)
+                
+                # Resumen de tokens en Binance
+                binance_count = df_trend[df_trend["En Binance"] == "✅"].shape[0]
+                st.info(f"De los {len(df_trend)} tokens en tendencia, **{binance_count}** cotizan actualmente en Binance (par USDT).")
+            else:
+                st.info("No se encontraron datos de tendencias.")
         else:
-            st.info("No se encontraron datos de tendencias.")
-    else:
-        st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
+            st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
 
 # ═══════════════════════════════════════
 # PAGINA: CONFIGURACION

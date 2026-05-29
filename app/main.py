@@ -49,7 +49,8 @@ def root():
             "lotes": "/lotes/cliente/{symbol}",
             "precios": "/precios/{symbol}",
             "ticker": "/ticker/{symbol}",
-            "daily-pnl": "/analytics/daily-pnl"
+            "daily-pnl": "/analytics/daily-pnl",
+            "performance-by-category": "/analytics/performance-by-category"
         }
     }
 
@@ -93,3 +94,8 @@ def resumen_dashboard(db: Session = Depends(get_db)):
 def get_daily_pnl(days: int = 7, db: Session = Depends(get_db)):
     analytics = AnalyticsService(db)
     return analytics.daily_pnl(days)
+
+@app.get("/analytics/performance-by-category")
+def get_performance_by_category(db: Session = Depends(get_db)):
+    analytics = AnalyticsService(db)
+    return analytics.rendimiento_por_categoria()

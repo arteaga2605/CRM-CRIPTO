@@ -155,7 +155,6 @@ class AnalyticsService:
         Retorna el PnL realizado por día (solo ventas) para los últimos 'days' días.
         """
         start_date = datetime.utcnow() - timedelta(days=days)
-        # Agrupar por día (fecha sin hora)
         results = self.db.query(
             func.date(Interaccion.timestamp).label('date'),
             func.sum(Interaccion.pnl_realizado).label('total_pnl')
@@ -164,12 +163,10 @@ class AnalyticsService:
             Interaccion.timestamp >= start_date
         ).group_by(func.date(Interaccion.timestamp)).order_by(func.date(Interaccion.timestamp)).all()
         
-        # Llenar los días que no tienen datos con 0
         daily_data = {}
         for r in results:
             daily_data[r.date] = float(r.total_pnl)
         
-        # Crear lista de los últimos 'days' días (incluyendo hoy)
         today = datetime.utcnow().date()
         pnl_list = []
         for i in range(days - 1, -1, -1):

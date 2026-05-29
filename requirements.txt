@@ -1,30 +1,33 @@
 # Framework
-fastapi[standard]>=0.115.0,<0.120.0
-uvicorn[standard]>=0.30.0,<0.35.0
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
 
 # Database
-sqlalchemy>=2.0.30,<2.1.0
-alembic>=1.13.0,<2.0.0
+sqlalchemy==2.0.30
+alembic==1.13.1
 
 # Validation
-pydantic>=2.7.0,<3.0.0
-pydantic-settings>=2.2.0,<3.0.0
+pydantic==2.7.0
+pydantic-settings==2.2.1
 
 # Dashboard
-streamlit>=1.35.0,<2.0.0
-plotly>=5.22.0,<6.0.0
-pandas>=2.0.0,<3.0.0
+streamlit==1.35.0
+plotly==5.22.0
+pandas==2.2.2
 
 # Exchange API
-ccxt>=4.4.0,<5.0.0
+ccxt==4.3.0
 
 # Background Tasks
-celery>=5.4.0,<6.0.0
-redis>=5.0.0,<6.0.0
+celery==5.4.0
+redis==5.0.0
 
 # Notifications (opcional)
-python-telegram-bot>=21.0,<22.0
+python-telegram-bot==21.0
 
 # Testing
-pytest>=8.0.0,<9.0.0
-httpx>=0.27.0,<0.28.0
+pytest==8.2.0
+httpx==0.27.0
+
+# Auto-refresh para Streamlit
+streamlit-autorefresh==1.0.1

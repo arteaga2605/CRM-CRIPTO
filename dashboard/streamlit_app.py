@@ -8,13 +8,15 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from streamlit_autorefresh import st_autorefresh
 
 API_URL = "http://localhost:8000"
 
 st.set_page_config(
     page_title="Crypto CRM Dashboard",
     page_icon="📊",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # ═══════════════════════════════════════
@@ -22,6 +24,15 @@ st.set_page_config(
 # ═══════════════════════════════════════
 st.sidebar.title("🪙 Crypto CRM")
 st.sidebar.markdown("*Tratando criptomonedas como clientes*")
+
+# Control de actualización automática
+st.sidebar.subheader("Actualización automática")
+auto_refresh = st.sidebar.checkbox("Activar actualización automática", value=False)
+if auto_refresh:
+    interval = st.sidebar.selectbox("Intervalo (segundos)", [5, 10, 30, 60], index=1)
+    st_autorefresh(interval=interval * 1000, key="auto_refresh")
+else:
+    st.sidebar.info("Desactivado. Usa los botones 'Actualizar' en cada sección.")
 
 page = st.sidebar.radio("Navegacion", [
     "🏠 Dashboard",
@@ -118,10 +129,23 @@ CATEGORIAS = [
 ]
 
 # ═══════════════════════════════════════
-# PAGINA: DASHBOARD (con gráfico de PnL diario)
+# PAGINA: DASHBOARD
 # ═══════════════════════════════════════
 if page == "🏠 Dashboard":
     st.title("📊 Dashboard Principal")
+    
+    # Botón manual de actualización de precios (adicional)
+    if st.button("🔄 Actualizar precios ahora (Binance)"):
+        with st.spinner("Actualizando precios de todos los clientes..."):
+            clientes = fetch("/clientes/")
+            if clientes:
+                for c in clientes:
+                    precio_real = obtener_precio_real(c["symbol"])
+                    if precio_real > 0:
+                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
+                st.success("Precios actualizados")
+                st.rerun()
+    
     data = fetch("/dashboard/resumen")
     if data:
         resumen = data.get("resumen", {})
@@ -129,6 +153,7 @@ if page == "🏠 Dashboard":
         distribucion = data.get("distribucion", [])
         top = data.get("top_performers", [])
 
+        # KPIs - responsive: usar columns con ratios
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Clientes Activos", resumen.get("clientes_activos", 0))
         col2.metric("VIP", resumen.get("clientes_vip", 0))
@@ -138,13 +163,12 @@ if page == "🏠 Dashboard":
 
         st.divider()
         
-        # Gráfico de PnL diario de los últimos 7 días
+        # Gráfico de PnL diario
         st.subheader("📈 Evolución de PnL Realizado (Últimos 7 días)")
         daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
         if daily_pnl_data:
             df_pnl = pd.DataFrame(daily_pnl_data)
             if not df_pnl.empty:
-                # Crear gráfico de barras con colores condicionales
                 fig = go.Figure()
                 fig.add_trace(go.Bar(
                     x=df_pnl["date"],
@@ -157,7 +181,8 @@ if page == "🏠 Dashboard":
                     title="PnL Realizado por Día",
                     xaxis_title="Fecha",
                     yaxis_title="PnL (USD)",
-                    template="plotly_white"
+                    template="plotly_white",
+                    height=400
                 )
                 st.plotly_chart(fig, width='stretch')
             else:
@@ -191,11 +216,23 @@ if page == "🏠 Dashboard":
             st.success("No hay alertas activas. Todo en orden! 🎉")
 
 # ═══════════════════════════════════════
-# PAGINA: CLIENTES (sin cambios relevantes)
+# PAGINA: CLIENTES (con botón manual de actualización)
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
     st.markdown("El PnL no realizado se calcula con **FIFO** (First In, First Out) e incluye comisiones.")
+
+    # Botón manual de actualización de precios
+    if st.button("🔄 Actualizar todos los precios desde Binance"):
+        with st.spinner("Actualizando precios..."):
+            clientes_actualizar = fetch("/clientes/")
+            if clientes_actualizar:
+                for c in clientes_actualizar:
+                    precio_real = obtener_precio_real(c["symbol"])
+                    if precio_real > 0:
+                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
+                st.success("Precios actualizados")
+                st.rerun()
 
     clientes = fetch("/clientes/")
     if not clientes:
@@ -203,15 +240,6 @@ elif page == "👥 Clientes":
         clientes = []
 
     if clientes:
-        if st.button("Actualizar todos los precios desde Binance"):
-            with st.spinner("Actualizando precios..."):
-                for c in clientes:
-                    precio_real = obtener_precio_real(c["symbol"])
-                    if precio_real > 0:
-                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
-                st.success("Precios actualizados")
-                st.rerun()
-
         lotes_data = fetch("/lotes/all")
         if not lotes_data:
             lotes_data = {}
@@ -621,10 +649,38 @@ elif page == "📦 Lotes FIFO":
             st.write("No hay lotes para este cliente.")
 
 # ═══════════════════════════════════════
-# PAGINA: ANALYTICS
+# PAGINA: ANALYTICS (con HEATMAP por categoría)
 # ═══════════════════════════════════════
 elif page == "📈 Analytics":
-    st.title("📈 Analytics")
+    st.title("📈 Analytics y Reportes")
+    
+    # Heatmap de rendimiento por categoría
+    st.subheader("🔥 Heatmap: Rendimiento por Categoría (ROI %)")
+    perf_data = fetch("/analytics/performance-by-category")
+    if perf_data:
+        df_perf = pd.DataFrame(perf_data)
+        if not df_perf.empty:
+            # Crear heatmap con Plotly
+            # Ordenar por ROI promedio descendente
+            df_perf = df_perf.sort_values("roi_promedio", ascending=False)
+            fig = px.imshow(
+                df_perf[["roi_promedio"]].values.T,
+                x=df_perf["categoria"],
+                y=["ROI Promedio %"],
+                color_continuous_scale="RdYlGn",
+                text_auto=True,
+                aspect="auto",
+                title="ROI Promedio por Categoría"
+            )
+            fig.update_xaxes(tickangle=45)
+            fig.update_layout(height=300, width=800)
+            st.plotly_chart(fig, width='stretch')
+        else:
+            st.info("No hay datos de categorías aún. Registra clientes con categorías.")
+    else:
+        st.info("No se pudieron cargar los datos de rendimiento por categoría.")
+    
+    # Resto de analytics (distribución, PnL diario, etc.)
     data = fetch("/dashboard/resumen")
     if data:
         resumen = data.get("resumen", {})
@@ -632,6 +688,7 @@ elif page == "📈 Analytics":
         col1.metric("Total Invertido", f"${resumen.get('total_invertido',0):,.2f}")
         col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado',0):,.2f}")
         col3.metric("PnL Total", f"${resumen.get('pnl_total',0):,.2f}")
+    
     st.subheader("Distribución del Portafolio")
     distribucion = fetch("/dashboard/resumen").get("distribucion",[]) if data else []
     if distribucion:
@@ -639,7 +696,6 @@ elif page == "📈 Analytics":
         fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composición Actual")
         st.plotly_chart(fig, width='stretch')
     
-    # Agregar gráfico de PnL diario también aquí (opcional)
     st.subheader("Evolución de PnL Realizado (Últimos 7 días)")
     daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
     if daily_pnl_data:
@@ -718,7 +774,6 @@ elif page == "📡 Mercado en Vivo":
         
         st.divider()
         
-        # Mostrar más datos del ticker
         st.subheader("Detalles del Ticker")
         detalle_col1, detalle_col2 = st.columns(2)
         with detalle_col1:

@@ -1,0 +1,301 @@
+El archivo está listo para copiar y pegar, y reemplazar al anterior.
+
+text
+================================================================================
+  ARCHIVO: documentacion_crypto_crm.txt (actualizado)
+================================================================================
+
+# 🪙 Crypto CRM - Tratando Criptomonedas como Clientes
+
+**Versión 3.0** – Con sistema FIFO, análisis de tendencias, correlación con BTC y dashboard interactivo.
+
+Un sistema completo de gestión de portafolio de criptomonedas construido con la mentalidad de CRM (Customer Relationship Management). Cada moneda es un "cliente" al que le das seguimiento, atención y estrategia.  
+Ahora con **cálculo de ganancias/pérdidas por lotes (FIFO)**, **sincronización de precios reales desde Binance**, **análisis de tendencias de mercado**, **correlación con Bitcoin** y **dashboard totalmente interactivo**.
+
+---
+
+## 🎯 Filosofía
+
+> "No operas criptomonedas, gestionas relaciones con activos digitales"
+
+- **Cliente** = Criptomoneda (BTC, ETH, PEPE)
+- **Interacción** = Transacción (compra, venta, staking)
+- **Lote de compra** = cada compra se guarda individualmente (cantidad, precio + comisión, fecha)
+- **Oportunidad** = Trade setup con entrada, objetivo y stop
+- **Tarea** = Alerta o recordatorio de seguimiento
+- **Tendencias de mercado** = Tokens más buscados, cambio 24h, presencia en Binance, correlación con BTC
+
+---
+
+## 🏗️ Arquitectura
+crypto_crm/
+├── app/
+│ ├── main.py # FastAPI entry point
+│ ├── models.py # SQLAlchemy ORM (incluye LoteCompra)
+│ ├── schemas.py # Pydantic validation
+│ ├── services/
+│ │ ├── crm_service.py # Lógica de negocio (FIFO, recalculo)
+│ │ ├── exchange_sync.py # CCXT connector (precios públicos)
+│ │ └── analytics.py # Métricas y alertas (incluye PnL diario)
+│ ├── api/
+│ │ ├── clientes.py # CRUD criptomonedas
+│ │ ├── interacciones.py # Transacciones (con eliminación)
+│ │ ├── oportunidades.py # Pipeline trades
+│ │ ├── tareas.py # Alertas
+│ │ └── lotes.py # Consulta de lotes FIFO
+│ └── tasks.py # Celery background jobs
+├── dashboard/
+│ └── streamlit_app.py # Interfaz visual (editable, con precios reales, tendencias)
+├── config.py
+└── requirements.txt
+
+text
+
+---
+
+## 🚀 Instalación Rápida
+
+```bash
+# 1. Clonar y entrar
+cd crypto_crm
+
+# 2. Crear entorno virtual
+python -m venv venv
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate   # Windows
+
+# 3. Instalar dependencias
+pip install -r requirements.txt
+# Nota: Si usas la página de Tendencias de Mercado, necesitarás scipy:
+pip install scipy
+
+# 4. Inicializar base de datos (se crea automáticamente)
+# Se crea crypto_crm.db
+
+# 5. Iniciar API
+uvicorn app.main:app --reload --port 8000
+
+# 6. En otra terminal, iniciar dashboard
+streamlit run dashboard/streamlit_app.py
+
+# 7. Opcional: workers Celery (para alertas periódicas)
+celery -A app.tasks worker --beat --loglevel=info
+📡 API Endpoints Principales
+Endpoint	Método	Descripción
+/clientes/	GET	Listar todas las criptomonedas
+/clientes/	POST	Registrar nueva moneda
+/clientes/{symbol}	PUT	Actualizar campos (cantidad, estado, etc.)
+/clientes/{symbol}/actualizar-precio	POST	Actualizar precio de mercado (automático desde Binance)
+/interacciones/	POST	Registrar compra/venta/staking (FIFO automático)
+/interacciones/{id}	DELETE	Eliminar interacción y reconstruir el cliente
+/interacciones/cliente/{symbol}	GET	Historial de transacciones
+/lotes/cliente/{symbol}	GET	Ver lotes de compra de un cliente
+/lotes/all	GET	Todos los lotes activos (para dashboard)
+/oportunidades/	GET/POST	Pipeline de trades
+/tareas/	GET/POST	Tareas y alertas
+/precios/{symbol}	GET	Precio actual desde Binance (público)
+/ticker/{symbol}	GET	Información completa del ticker (cambio 24h, volumen)
+/velas/{symbol}	GET	Velas OHLCV históricas
+/analytics/daily-pnl	GET	PnL realizado por día (últimos N días)
+/analytics/performance-by-category	GET	Rendimiento (ROI) por categoría de cliente
+/dashboard/resumen	GET	Resumen para el dashboard
+💡 Ejemplo de Uso (FIFO)
+python
+from app.models import init_db, SessionLocal
+from app.services.crm_service import CRMService
+
+init_db()
+db = SessionLocal()
+crm = CRMService(db)
+
+# 1. Registrar cliente
+crm.registrar_cliente("BTC", "Bitcoin", "layer1")
+
+# 2. Comprar 0.1 BTC a 60000 USD (fee 10 USD)
+crm.registrar_compra("BTC", 0.1, 60000, fee=10)
+
+# 3. Comprar 0.2 BTC a 55000 USD (fee 20 USD)
+crm.registrar_compra("BTC", 0.2, 55000, fee=20)
+
+# 4. Vender 0.15 BTC a 65000 USD (fee 15 USD)
+venta = crm.registrar_venta_fifo("BTC", 0.15, 65000, fee=15)
+print(f"PnL total de la venta: ${venta['pnl_total']}")
+for detalle in venta['detalle_lotes']:
+    print(f"Lote {detalle['lote_id']}: {detalle['cantidad']} BTC, PnL: ${detalle['pnl_lote']}")
+
+# 5. Ver lotes restantes
+lotes = crm.obtener_lotes_cliente("BTC")
+for l in lotes:
+    print(f"Quedan {l.cantidad_restante} BTC a precio {l.precio_unitario}")
+🔔 Alertas Inteligentes (Celery)
+Se generan automáticamente tareas basadas en:
+
+Pérdida > 20% → sugerir stop loss
+
+Ganancia > 50% → sugerir take profit parcial
+
+Concentración > 30% → sugerir rebalancear
+
+Sin movimiento en 30 días → revisar estrategia
+
+📊 Dashboard
+El dashboard de Streamlit incluye las siguientes secciones:
+
+🏠 Dashboard Principal
+KPIs: clientes activos, VIP, en peligro, PnL total, ROI.
+
+Gráfico de evolución de PnL realizado (últimos 7 días, barras verdes/rojas).
+
+Distribución del portafolio (gráfico de torta).
+
+Top performers (ROI por moneda).
+
+Alertas inteligentes visuales.
+
+Botón para actualizar precios manualmente desde Binance.
+
+👥 Clientes
+Tabla editable (cantidad, costo promedio, estado, tags, etc.).
+
+Cálculo automático de PnL no realizado usando FIFO.
+
+Visualización de lotes de compra (FIFO) por cliente.
+
+Botones para actualizar precio (individual o masivo) desde Binance.
+
+💱 Interacciones
+Registro de compras, ventas, staking, airdrops.
+
+Sistema FIFO: al vender, se muestra el desglose por lote y el PnL total.
+
+Historial de transacciones con opción de eliminar (reconstruye el estado automáticamente).
+
+🎯 Oportunidades
+Crear setups de trade (entrada, objetivo, stop, confianza).
+
+Listado de oportunidades abiertas.
+
+Cerrar oportunidades (ejecutada / cancelada) con registro de PnL.
+
+✅ Tareas
+Crear tareas/alertas asignadas a un cliente.
+
+Listado de tareas pendientes (con indicación de vencimiento).
+
+Botón para completar tareas.
+
+📦 Lotes FIFO
+Muestra todos los lotes de compra de un cliente (cantidad inicial, restante, precio con comisión).
+
+Calcula el costo promedio ponderado restante.
+
+📈 Analytics
+Heatmap de rendimiento por categoría (ROI %).
+
+Distribución del portafolio.
+
+Evolución de PnL realizado (últimos 7 días).
+
+📡 Mercado en Vivo
+Precio actual, ticker, cambio 24h, volumen, bid/ask.
+
+Flecha de tendencia (alcista/bajista) y sentimiento del mercado.
+
+Gráfico de velas (OHLCV) con timeframes configurables.
+
+🔥 Tendencias de Mercado (NUEVO)
+Tokens más buscados en CoinGecko (Top 7-10).
+
+Indicador "En Binance": si cotiza en Binance (par USDT).
+
+Tendencia alcista/bajista basada en cambio 24h (iconos y texto).
+
+Correlación con Bitcoin (positiva, negativa o neutra) usando precios de los últimos 7 días.
+
+Gráficos de puntuación de tendencia y cambio 24h.
+
+Logos de los tokens.
+
+⚙️ Configuración
+Conexión a exchanges (simulada).
+
+Preferencias de alertas.
+
+🔗 Conexión con Binance (API Pública)
+Sin necesidad de API key, se pueden obtener:
+
+Precio actual de cualquier par symbol/USDT
+
+Ticker (cambio 24h, volumen, máximos/mínimos)
+
+Velas históricas (OHLCV) para gráficos
+
+Lista de todos los pares USDT disponibles (para verificar si un token está listado)
+
+🚀 Funcionalidades Avanzadas
+Actualización automática de precios
+En el sidebar, activa la opción "Actualización automática" y elige un intervalo (5, 10, 30 o 60 segundos). El dashboard se recargará automáticamente manteniendo precios frescos.
+
+Eliminación de interacciones
+Desde la página de Interacciones, puedes eliminar cualquier transacción (compra/venta/staking). El sistema reconstruirá el estado del cliente desde cero con las interacciones restantes, manteniendo la consistencia FIFO.
+
+Cálculo de PnL no realizado con FIFO
+En la tabla de clientes, el PnL no realizado se calcula en base a los lotes de compra activos (no con costo promedio), coincidiendo con el método usado por la mayoría de exchanges.
+
+🛡️ Seguridad
+Las API keys nunca se almacenan en la DB (solo se usan en tiempo real si se proporcionan)
+
+SQLite local por defecto (fácil de migrar a PostgreSQL)
+
+Sin conexión a internet requerida para operación básica (excepto precios reales y tendencias)
+
+📝 Roadmap (implementado hasta ahora)
+FIFO con lotes de compra
+
+Eliminación de interacciones
+
+Precios en tiempo real desde Binance (público)
+
+Dashboard editable
+
+Gráfico de evolución de PnL (7 días)
+
+Heatmap de rendimiento por categoría
+
+Página de Tendencias de Mercado (CoinGecko)
+
+Indicador de presencia en Binance
+
+Cálculo de correlación con Bitcoin
+
+Actualización automática opcional (Streamlit)
+
+WebSockets para precios en tiempo real (streaming)
+
+Notificaciones Telegram/Email
+
+Backtesting de oportunidades
+
+Machine Learning para sentiment scoring
+
+📄 Licencia
+MIT – Usalo, modificalo, hazlo tuyo.
+
+Construido con ❤️ para traders que piensan como gestores de relaciones.
+
+================================================================================
+FIN DE ARCHIVO: documentacion_crypto_crm.txt
+================================================================================
+
+text
+
+---
+
+## ✅ Instrucciones
+
+1. **Copia todo el contenido** de este cuadro en un archivo nuevo llamado `documentacion_crypto_crm.txt` (o reemplaza el anterior).
+2. Guarda el archivo en la raíz de tu proyecto.
+3. Si quieres mantener el archivo original `codigo_completo_crypto_crm.txt`, actualízalo con este mismo contenido.
+
+La documentación ahora refleja fielmente todas las capacidades de tu aplicación: desde FIFO y alertas hasta el nuevo análisis de tendencias de mercado.
+This response is AI-generated, for reference only.

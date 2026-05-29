@@ -43,6 +43,7 @@ page = st.sidebar.radio("Navegacion", [
     "📦 Lotes FIFO",
     "📈 Analytics",
     "📡 Mercado en Vivo",
+    "🔥 Tendencias de Mercado",
     "⚙️ Configuracion"
 ])
 
@@ -119,6 +120,38 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
     except:
         pass
     return []
+
+def obtener_tendencias_coingecko():
+    """
+    Obtiene las criptomonedas con mayor tendencia (más buscadas) desde CoinGecko.
+    Endpoint público sin necesidad de API key.
+    """
+    url = "https://api.coingecko.com/api/v3/search/trending"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if "coins" in data:
+                trending = []
+                for coin in data["coins"]:
+                    item = coin["item"]
+                    trending.append({
+                        "Token": item.get("symbol", "").upper(),
+                        "Nombre": item.get("name", ""),
+                        "Puntuación": item.get("score", 0),
+                        "Precio (USD)": item.get("price_btc", 0) * 30000,  # Conversión aprox BTC a USD
+                        "Market Cap Rank": item.get("market_cap_rank", 0),
+                        "Logo": item.get("thumb", "")
+                    })
+                return trending
+            else:
+                return None
+        else:
+            st.error(f"Error {r.status_code} al obtener tendencias de CoinGecko")
+            return None
+    except Exception as e:
+        st.error(f"Error conectando a CoinGecko: {e}")
+        return None
 
 # Categorías actualizadas (Binance)
 CATEGORIAS = [
@@ -805,6 +838,45 @@ elif page == "📡 Mercado en Vivo":
             st.warning("No se pudieron obtener velas para este símbolo.")
     else:
         st.error("No se pudo obtener información del ticker. Intenta con otro símbolo.")
+
+# ═══════════════════════════════════════
+# NUEVA PAGINA: TENDENCIAS DE MERCADO (CoinGecko Trending)
+# ═══════════════════════════════════════
+elif page == "🔥 Tendencias de Mercado":
+    st.title("🔥 Tendencias de Mercado (CoinGecko)")
+    st.markdown("Criptomonedas más buscadas y con mayor tendencia actualmente.")
+    
+    if st.button("🔄 Actualizar datos"):
+        st.rerun()
+    
+    with st.spinner("Cargando tendencias desde CoinGecko..."):
+        tendencias = obtener_tendencias_coingecko()
+    
+    if tendencias:
+        df_trend = pd.DataFrame(tendencias)
+        if not df_trend.empty:
+            # Mostrar tabla
+            st.subheader("🏆 Top 7 Tendencias")
+            # Ordenar por puntuación (score)
+            df_trend = df_trend.sort_values("Puntuación", ascending=False)
+            st.dataframe(df_trend[["Token", "Nombre", "Puntuación", "Market Cap Rank"]], width='stretch')
+            
+            # Gráfico de barras
+            fig = px.bar(df_trend, x="Token", y="Puntuación", color="Puntuación",
+                         color_continuous_scale="Blues", title="Puntuación de Tendencia por Token")
+            st.plotly_chart(fig, width='stretch')
+            
+            # Mostrar logos (opcional)
+            st.subheader("Logos de los tokens en tendencia")
+            cols = st.columns(5)
+            for i, row in df_trend.head(5).iterrows():
+                with cols[i % 5]:
+                    if row.get("Logo"):
+                        st.image(row["Logo"], caption=row["Token"], width=60)
+        else:
+            st.info("No se encontraron datos de tendencias.")
+    else:
+        st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
 
 # ═══════════════════════════════════════
 # PAGINA: CONFIGURACION

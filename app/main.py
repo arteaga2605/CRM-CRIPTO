@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
@@ -6,6 +6,7 @@ from app.models import init_db, SessionLocal
 from app.api import clientes, interacciones, oportunidades, tareas, lotes
 from app.services.exchange_sync import ExchangeConnector
 from app.services.analytics import AnalyticsService
+from app.services.binance_events import BinanceEventService
 
 app = FastAPI(
     title="Crypto CRM",
@@ -50,7 +51,9 @@ def root():
             "precios": "/precios/{symbol}",
             "ticker": "/ticker/{symbol}",
             "daily-pnl": "/analytics/daily-pnl",
-            "performance-by-category": "/analytics/performance-by-category"
+            "performance-by-category": "/analytics/performance-by-category",
+            "binance-events": "/binance-events",
+            "binance-events-update": "/binance-events/update (POST)"
         }
     }
 
@@ -99,3 +102,31 @@ def get_daily_pnl(days: int = 7, db: Session = Depends(get_db)):
 def get_performance_by_category(db: Session = Depends(get_db)):
     analytics = AnalyticsService(db)
     return analytics.rendimiento_por_categoria()
+
+@app.get("/binance-events")
+def get_binance_events(limit: int = 20, db: Session = Depends(get_db)):
+    service = BinanceEventService(db)
+    events = service.get_active_events(limit)
+    return [
+        {
+            "id": e.id,
+            "title": e.title,
+            "description": e.description,
+            "event_type": e.event_type,
+            "url": e.url,
+            "event_date": e.event_date.isoformat() if e.event_date else None,
+            "detected_at": e.detected_at.isoformat()
+        }
+        for e in events
+    ]
+
+@app.post("/binance-events/update")
+def update_binance_events(db: Session = Depends(get_db)):
+    """Forzar la actualización manual de eventos desde Binance."""
+    service = BinanceEventService(db)
+    saved = service.update_events()
+    if saved == 0:
+        # Si no se guardó ninguno, puede que el scraper no haya encontrado nada
+        # Pero igualmente devolvemos mensaje informativo
+        return {"message": "No se encontraron nuevos eventos. Es posible que Binance haya cambiado su estructura o no haya novedades."}
+    return {"message": f"Actualización completada. {saved} nuevos eventos guardados."}

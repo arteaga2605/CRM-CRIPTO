@@ -8,6 +8,7 @@ from app.models import engine, ClienteCripto, EstadoCliente, Tarea
 from app.services.crm_service import CRMService
 from app.services.analytics import AnalyticsService
 from app.services.exchange_sync import ExchangeConnector
+from app.services.binance_events import BinanceEventService
 from datetime import datetime, timedelta
 
 app = Celery('crypto_crm', broker='redis://localhost:6379/0')
@@ -54,7 +55,7 @@ def sincronizar_precios():
     db = SessionLocal()
     try:
         crm = CRMService(db)
-        connector = ExchangeConnector()  # Sin API key, modo público
+        connector = ExchangeConnector()
         clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
 
         actualizados = 0
@@ -89,7 +90,19 @@ Tareas pendientes: {resumen['tareas_pendientes']}
 Oportunidades abiertas: {resumen['oportunidades_abiertas']}
 ━━━━━━━━━━━━━━━━━━━━━━
         """
-        # Aquí se podría enviar por email o Telegram
         return reporte
+    finally:
+        db.close()
+
+@app.task
+def fetch_binance_events():
+    """Tarea programada para buscar eventos nuevos de Binance (cada 6 horas)."""
+    db = SessionLocal()
+    try:
+        service = BinanceEventService(db)
+        saved = service.update_events()
+        return f"Se encontraron {saved} nuevos eventos de Binance."
+    except Exception as e:
+        return f"Error actualizando eventos de Binance: {e}"
     finally:
         db.close()

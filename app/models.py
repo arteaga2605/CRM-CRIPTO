@@ -158,10 +158,27 @@ class Tarea(Base):
     def __repr__(self):
         return f"<Tarea({self.cliente.symbol}: {self.tipo_tarea})>"
 
+# ─── EVENTOS DE BINANCE (Launchpool, Megadrop, nuevos listados) ───
+class BinanceEvent(Base):
+    __tablename__ = "binance_events"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    event_type = Column(String(50), nullable=False)  # "launchpool", "megadrop", "new_listing", "announcement"
+    url = Column(String(500), nullable=True)
+    event_date = Column(DateTime, nullable=True)    # fecha del evento (si se puede extraer)
+    detected_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)       # si el evento sigue vigente
+
+    def __repr__(self):
+        return f"<BinanceEvent({self.event_type}: {self.title})>"
+
 # ─── CONFIGURACION DB ───
 DATABASE_URL = "sqlite:///./crypto_crm.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
+    # create_all no borra datos existentes, solo añade nuevas tablas
     Base.metadata.create_all(bind=engine)

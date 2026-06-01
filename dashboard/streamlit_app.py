@@ -11,6 +11,10 @@ from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
 import time
 from scipy.stats import pearsonr
+import multiprocessing
+
+# Forzar método spawn para evitar problemas de hilos en Windows
+multiprocessing.set_start_method('spawn', force=True)
 
 API_URL = "http://localhost:8000"
 
@@ -22,21 +26,102 @@ st.set_page_config(
 )
 
 # ═══════════════════════════════════════
+# ESTILOS PERSONALIZADOS PARA EL SIDEBAR
+# ═══════════════════════════════════════
+st.markdown("""
+<style>
+    /* Fondo del sidebar */
+    [data-testid="stSidebar"] {
+        background: linear-gradient(135deg, #1e2a3a 0%, #0f1724 100%);
+        border-right: 1px solid #2d3e50;
+    }
+    /* Título principal */
+    [data-testid="stSidebar"] .css-1d391kg {
+        color: #ffffff;
+        font-size: 1.8rem;
+        font-weight: bold;
+        text-align: center;
+        border-bottom: 2px solid #ffd700;
+        padding-bottom: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    /* Subtítulo */
+    [data-testid="stSidebar"] .css-1wivap2 {
+        color: #b0c4de;
+        font-size: 0.9rem;
+        text-align: center;
+        margin-top: -0.5rem;
+        margin-bottom: 1.5rem;
+    }
+    /* Opciones del radio */
+    [data-testid="stSidebar"] div[role="radiogroup"] label {
+        background-color: rgba(255,255,255,0.05);
+        border-radius: 12px;
+        padding: 8px 12px;
+        margin: 4px 0;
+        transition: all 0.2s ease;
+        color: #e0e0e0;
+        font-weight: 500;
+        font-size: 1rem;
+    }
+    /* Hover sobre opciones */
+    [data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+        background-color: rgba(255,215,0,0.2);
+        color: #ffd700;
+        transform: translateX(5px);
+    }
+    /* Opción seleccionada */
+    [data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stMarkdownContainer"]:has(input:checked) {
+        background-color: #ffd700;
+        color: #0f1724;
+        font-weight: bold;
+        box-shadow: 0 2px 8px rgba(255,215,0,0.3);
+    }
+    /* Radio circle oculto (personalizamos con background) */
+    [data-testid="stSidebar"] div[role="radiogroup"] input {
+        accent-color: #ffd700;
+    }
+    /* Checkbox de actualización automática */
+    [data-testid="stSidebar"] .stCheckbox {
+        background: #2d3e50;
+        padding: 6px 12px;
+        border-radius: 20px;
+        margin: 10px 0;
+        color: white;
+    }
+    /* Selectbox dentro del sidebar */
+    [data-testid="stSidebar"] .stSelectbox {
+        background: #2d3e50;
+        border-radius: 8px;
+    }
+    /* Info box */
+    [data-testid="stSidebar"] .stAlert {
+        background: #2d3e50;
+        border-left: 4px solid #ffd700;
+        border-radius: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════
 # SIDEBAR
 # ═══════════════════════════════════════
 st.sidebar.title("🪙 Crypto CRM")
 st.sidebar.markdown("*Tratando criptomonedas como clientes*")
 
 # Control de actualización automática
-st.sidebar.subheader("Actualización automática")
-auto_refresh = st.sidebar.checkbox("Activar actualización automática", value=False)
+st.sidebar.subheader("⚡ Actualización automática")
+auto_refresh = st.sidebar.checkbox("🔄 Activar actualización automática", value=False)
 if auto_refresh:
-    interval = st.sidebar.selectbox("Intervalo (segundos)", [5, 10, 30, 60], index=1)
+    interval = st.sidebar.selectbox("⏱️ Intervalo (segundos)", [5, 10, 30, 60], index=1)
     st_autorefresh(interval=interval * 1000, key="auto_refresh")
 else:
     st.sidebar.info("Desactivado. Usa los botones 'Actualizar' en cada sección.")
 
-page = st.sidebar.radio("Navegacion", [
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧭 Navegación")
+
+page = st.sidebar.radio("Navegación", [
     "🏠 Dashboard",
     "👥 Clientes",
     "💱 Interacciones",
@@ -46,8 +131,9 @@ page = st.sidebar.radio("Navegacion", [
     "📈 Analytics",
     "📡 Mercado en Vivo",
     "🔥 Tendencias de Mercado",
+    "📢 Eventos Binance",
     "⚙️ Configuracion"
-])
+], label_visibility="hidden")
 
 # ═══════════════════════════════════════
 # FUNCIONES AUXILIARES
@@ -126,9 +212,8 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
 # ═══════════════════════════════════════
 # FUNCIONES PARA TENDENCIAS Y CORRELACIONES
 # ═══════════════════════════════════════
-@st.cache_data(ttl=3600)  # cache por 1 hora
+@st.cache_data(ttl=3600)
 def obtener_simbolos_binance():
-    """Obtiene la lista de símbolos disponibles en Binance (pares USDT)."""
     url = "https://api.binance.com/api/v3/exchangeInfo"
     try:
         r = requests.get(url, timeout=10)
@@ -141,9 +226,8 @@ def obtener_simbolos_binance():
     except:
         return []
 
-@st.cache_data(ttl=300)  # cache por 5 minutos
+@st.cache_data(ttl=300)
 def obtener_tendencias_coingecko():
-    """Obtiene las criptomonedas con mayor tendencia desde CoinGecko."""
     url = "https://api.coingecko.com/api/v3/search/trending"
     try:
         r = requests.get(url, timeout=10)
@@ -153,8 +237,6 @@ def obtener_tendencias_coingecko():
                 trending = []
                 for coin in data["coins"]:
                     item = coin["item"]
-                    # Obtener cambio de precio 24h desde CoinGecko (no viene en trending, hay que hacer otra llamada)
-                    # Por simplicidad, lo dejamos como None y luego lo obtenemos con otra función
                     trending.append({
                         "id": item.get("id", ""),
                         "symbol": item.get("symbol", "").upper(),
@@ -174,7 +256,6 @@ def obtener_tendencias_coingecko():
 
 @st.cache_data(ttl=300)
 def obtener_precio_actual_coingecko(coin_id):
-    """Obtiene el precio actual y cambio 24h de una moneda por su ID de CoinGecko."""
     url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
     try:
         r = requests.get(url, timeout=10)
@@ -191,15 +272,12 @@ def obtener_precio_actual_coingecko(coin_id):
 
 @st.cache_data(ttl=3600)
 def obtener_historicos_coingecko(coin_id, days=7):
-    """Obtiene precios históricos de los últimos 'days' días en USD."""
     url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
     try:
         r = requests.get(url, timeout=15)
         if r.status_code == 200:
             data = r.json()
             prices = data.get("prices", [])
-            # Extraer solo el precio de cierre (último del día)
-            # Coingecko devuelve [timestamp, price]
             df = pd.DataFrame(prices, columns=["timestamp", "price"])
             df["date"] = pd.to_datetime(df["timestamp"], unit='ms').dt.date
             daily_prices = df.groupby("date")["price"].last().reset_index()
@@ -210,7 +288,6 @@ def obtener_historicos_coingecko(coin_id, days=7):
         return []
 
 def calcular_correlacion_con_btc(token_prices, btc_prices):
-    """Calcula correlación de Pearson entre dos listas de precios."""
     if len(token_prices) < 2 or len(btc_prices) < 2:
         return None
     try:
@@ -233,7 +310,6 @@ CATEGORIAS = [
 if page == "🏠 Dashboard":
     st.title("📊 Dashboard Principal")
     
-    # Botón manual de actualización de precios (adicional)
     if st.button("🔄 Actualizar precios ahora (Binance)"):
         with st.spinner("Actualizando precios de todos los clientes..."):
             clientes = fetch("/clientes/")
@@ -252,7 +328,6 @@ if page == "🏠 Dashboard":
         distribucion = data.get("distribucion", [])
         top = data.get("top_performers", [])
 
-        # KPIs - responsive: usar columns con ratios
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Clientes Activos", resumen.get("clientes_activos", 0))
         col2.metric("VIP", resumen.get("clientes_vip", 0))
@@ -262,7 +337,6 @@ if page == "🏠 Dashboard":
 
         st.divider()
         
-        # Gráfico de PnL diario
         st.subheader("📈 Evolución de PnL Realizado (Últimos 7 días)")
         daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
         if daily_pnl_data:
@@ -276,13 +350,7 @@ if page == "🏠 Dashboard":
                     text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
                     textposition='auto'
                 ))
-                fig.update_layout(
-                    title="PnL Realizado por Día",
-                    xaxis_title="Fecha",
-                    yaxis_title="PnL (USD)",
-                    template="plotly_white",
-                    height=400
-                )
+                fig.update_layout(title="PnL Realizado por Día", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
                 st.plotly_chart(fig, width='stretch')
             else:
                 st.info("No hay datos de PnL para los últimos 7 días.")
@@ -315,13 +383,12 @@ if page == "🏠 Dashboard":
             st.success("No hay alertas activas. Todo en orden! 🎉")
 
 # ═══════════════════════════════════════
-# PAGINA: CLIENTES (con botón manual de actualización)
+# PAGINA: CLIENTES
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
     st.markdown("El PnL no realizado se calcula con **FIFO** (First In, First Out) e incluye comisiones.")
 
-    # Botón manual de actualización de precios
     if st.button("🔄 Actualizar todos los precios desde Binance"):
         with st.spinner("Actualizando precios..."):
             clientes_actualizar = fetch("/clientes/")
@@ -487,7 +554,7 @@ elif page == "👥 Clientes":
                         st.rerun()
 
 # ═══════════════════════════════════════
-# PAGINA: INTERACCIONES (sin cambios)
+# PAGINA: INTERACCIONES
 # ═══════════════════════════════════════
 elif page == "💱 Interacciones":
     st.title("💱 Registro de Interacciones (FIFO para ventas)")
@@ -748,19 +815,16 @@ elif page == "📦 Lotes FIFO":
             st.write("No hay lotes para este cliente.")
 
 # ═══════════════════════════════════════
-# PAGINA: ANALYTICS (con HEATMAP por categoría)
+# PAGINA: ANALYTICS
 # ═══════════════════════════════════════
 elif page == "📈 Analytics":
     st.title("📈 Analytics y Reportes")
     
-    # Heatmap de rendimiento por categoría
     st.subheader("🔥 Heatmap: Rendimiento por Categoría (ROI %)")
     perf_data = fetch("/analytics/performance-by-category")
     if perf_data:
         df_perf = pd.DataFrame(perf_data)
         if not df_perf.empty:
-            # Crear heatmap con Plotly
-            # Ordenar por ROI promedio descendente
             df_perf = df_perf.sort_values("roi_promedio", ascending=False)
             fig = px.imshow(
                 df_perf[["roi_promedio"]].values.T,
@@ -779,7 +843,6 @@ elif page == "📈 Analytics":
     else:
         st.info("No se pudieron cargar los datos de rendimiento por categoría.")
     
-    # Resto de analytics (distribución, PnL diario, etc.)
     data = fetch("/dashboard/resumen")
     if data:
         resumen = data.get("resumen", {})
@@ -816,7 +879,7 @@ elif page == "📈 Analytics":
         st.info("No se pudieron cargar los datos de PnL diario.")
 
 # ═══════════════════════════════════════
-# PAGINA: MERCADO EN VIVO (con tendencia y sentimiento)
+# PAGINA: MERCADO EN VIVO
 # ═══════════════════════════════════════
 elif page == "📡 Mercado en Vivo":
     st.title("📡 Datos Reales de Binance")
@@ -830,7 +893,6 @@ elif page == "📡 Mercado en Vivo":
         cambio_pct = ticker.get("percentage", 0.0)
         precio_actual = ticker.get("last", 0)
         
-        # Flecha de tendencia
         if cambio_pct > 0.5:
             arrow = "🔼"
             tendencia = "Alcista fuerte"
@@ -847,7 +909,6 @@ elif page == "📡 Mercado en Vivo":
             arrow = "⏸️"
             tendencia = "Neutral"
         
-        # Sentimiento del mercado basado en el cambio porcentual
         if cambio_pct > 3:
             sentimiento = "🟢 Muy alcista / Euforia"
         elif cambio_pct > 1:
@@ -906,29 +967,24 @@ elif page == "📡 Mercado en Vivo":
         st.error("No se pudo obtener información del ticker. Intenta con otro símbolo.")
 
 # ═══════════════════════════════════════
-# PÁGINA: TENDENCIAS DE MERCADO (MEJORADA CON BINANCE, TENDENCIA Y CORRELACIÓN)
+# PAGINA: TENDENCIAS DE MERCADO (CoinGecko)
 # ═══════════════════════════════════════
 elif page == "🔥 Tendencias de Mercado":
     st.title("🔥 Tendencias de Mercado (CoinGecko)")
     st.markdown("Criptomonedas más buscadas y con mayor tendencia actualmente.")
     
     if st.button("🔄 Actualizar datos"):
-        # Limpiar caché de funciones que tienen @st.cache_data
         st.cache_data.clear()
         st.rerun()
     
     with st.spinner("Cargando datos de tendencias, Binance y correlaciones..."):
-        # Obtener lista de símbolos de Binance
         binance_symbols = obtener_simbolos_binance()
-        # Obtener tendencias de CoinGecko
         tendencias = obtener_tendencias_coingecko()
         
         if tendencias:
-            # Obtener datos de precios y correlación para cada token
             df_list = []
             progress_bar = st.progress(0)
             for i, token in enumerate(tendencias):
-                # Información básica
                 token_id = token["id"]
                 symbol = token["symbol"]
                 name = token["name"]
@@ -936,14 +992,10 @@ elif page == "🔥 Tendencias de Mercado":
                 market_rank = token["market_cap_rank"]
                 thumb = token["thumb"]
                 
-                # Verificar si está en Binance
                 in_binance = f"{symbol}USDT" in binance_symbols
-                
-                # Obtener cambio de precio 24h
                 price_data = obtener_precio_actual_coingecko(token_id)
                 change_24h = price_data["change_24h"]
                 
-                # Determinar tendencia alcista/bajista
                 if change_24h > 1:
                     trend_icon = "🟢"
                     trend_text = "Alcista fuerte"
@@ -957,16 +1009,13 @@ elif page == "🔥 Tendencias de Mercado":
                     trend_icon = "🔴"
                     trend_text = "Bajista fuerte"
                 
-                # Calcular correlación con BTC (si no es BTC)
                 correlation = None
                 if symbol != "BTC" and token_id:
-                    # Obtener precios históricos del token y BTC
                     token_prices = obtener_historicos_coingecko(token_id, days=7)
                     btc_prices = obtener_historicos_coingecko("bitcoin", days=7)
                     if token_prices and btc_prices:
-                        # Asegurar misma longitud
                         min_len = min(len(token_prices), len(btc_prices))
-                        if min_len >= 3:  # mínimo 3 puntos para correlación
+                        if min_len >= 3:
                             corr = calcular_correlacion_con_btc(token_prices[:min_len], btc_prices[:min_len])
                             if corr is not None:
                                 if corr > 0.5:
@@ -1000,19 +1049,13 @@ elif page == "🔥 Tendencias de Mercado":
             
             df_trend = pd.DataFrame(df_list)
             if not df_trend.empty:
-                # Mostrar tabla principal
-                st.subheader("🏆 Top Tendencias con indicadores")
                 display_cols = ["Token", "Nombre", "Score", "Market Cap Rank", "En Binance", "Cambio 24h (%)", "Tendencia", "Correlación BTC"]
                 st.dataframe(df_trend[display_cols], width='stretch')
                 
-                # Gráfico de puntuación de tendencia
-                st.subheader("📊 Puntuación de Tendencia por Token")
                 fig = px.bar(df_trend, x="Token", y="Score", color="Score",
                              color_continuous_scale="Blues", title="Score de Tendencia")
                 st.plotly_chart(fig, width='stretch')
                 
-                # Gráfico de cambio 24h (colores rojo/verde)
-                st.subheader("📈 Cambio de Precio en 24h")
                 fig2 = go.Figure()
                 colors = ['green' if x > 0 else 'red' for x in df_trend["Cambio 24h (%)"]]
                 fig2.add_trace(go.Bar(
@@ -1025,7 +1068,6 @@ elif page == "🔥 Tendencias de Mercado":
                 fig2.update_layout(title="Variación 24h por Token", xaxis_title="Token", yaxis_title="Cambio (%)")
                 st.plotly_chart(fig2, width='stretch')
                 
-                # Mostrar logos de los tokens
                 st.subheader("🖼️ Logos de tokens en tendencia")
                 cols = st.columns(5)
                 for i, row in df_trend.head(10).iterrows():
@@ -1033,7 +1075,6 @@ elif page == "🔥 Tendencias de Mercado":
                         if row["Logo"]:
                             st.image(row["Logo"], caption=row["Token"], width=60)
                 
-                # Resumen de tokens en Binance
                 binance_count = df_trend[df_trend["En Binance"] == "✅"].shape[0]
                 st.info(f"De los {len(df_trend)} tokens en tendencia, **{binance_count}** cotizan actualmente en Binance (par USDT).")
             else:
@@ -1041,6 +1082,68 @@ elif page == "🔥 Tendencias de Mercado":
         else:
             st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
 
+# ═══════════════════════════════════════
+# PAGINA: EVENTOS BINANCE (solo reales)
+# ═══════════════════════════════════════
+elif page == "📢 Eventos Binance":
+    st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
+    st.markdown("Eventos recientes extraídos de la página oficial de anuncios de Binance.")
+    
+    col1, col2 = st.columns([3,1])
+    with col1:
+        st.info("🔍 Los eventos se obtienen mediante web scraping de la página de anuncios de Binance.")
+    with col2:
+        if st.button("🔄 Forzar actualización ahora", type="primary"):
+            with st.spinner("Actualizando eventos desde Binance..."):
+                try:
+                    r = requests.post(f"{API_URL}/binance-events/update", timeout=30)
+                    if r.status_code == 200:
+                        data = r.json()
+                        st.success(data.get("message", "Actualización completada."))
+                        st.rerun()
+                    else:
+                        st.error(f"Error {r.status_code}: {r.text[:200]}")
+                except Exception as e:
+                    st.error(f"Error de conexión: {e}")
+    
+    eventos = fetch("/binance-events?limit=30")
+    if eventos is None:
+        st.error("No se pudo conectar a la API. Asegúrate de que FastAPI esté corriendo en el puerto 8000.")
+    elif isinstance(eventos, list):
+        if len(eventos) > 0:
+            df_events = pd.DataFrame(eventos)
+            if "detected_at" in df_events.columns:
+                df_events["detected_at"] = pd.to_datetime(df_events["detected_at"]).dt.strftime("%Y-%m-%d %H:%M")
+            if "event_date" in df_events.columns:
+                df_events["event_date"] = pd.to_datetime(df_events["event_date"]).dt.strftime("%Y-%m-%d") if df_events["event_date"].notna().any() else None
+            
+            st.subheader("📋 Últimos eventos detectados")
+            display_cols = ["title", "event_type", "detected_at", "url"]
+            st.dataframe(df_events[display_cols], width='stretch')
+            
+            st.subheader("🔍 Detalle de eventos")
+            for idx, row in df_events.iterrows():
+                with st.expander(f"📌 {row['title'][:100]}"):
+                    st.markdown(f"**Tipo:** {row['event_type']}")
+                    st.markdown(f"**Detectado:** {row['detected_at']}")
+                    if row.get('event_date') and row['event_date'] != "None":
+                        st.markdown(f"**Fecha del evento:** {row['event_date']}")
+                    if row.get('url') and row['url'] != "None":
+                        st.markdown(f"**Enlace:** [Ver anuncio]({row['url']})")
+                    if row.get('description'):
+                        st.markdown(f"**Descripción:** {row['description']}")
+        else:
+            st.warning("No se encontraron eventos reales en este momento. Es posible que Binance haya cambiado la estructura de su página o que no haya novedades recientes. Intenta más tarde.")
+    else:
+        st.error("La respuesta de la API no tiene el formato esperado.")
+    
+    with st.expander("ℹ️ ¿Cómo funciona?"):
+        st.markdown("""
+        - El sistema extrae anuncios de la página oficial de Binance.
+        - Si no se detectan eventos reales (por cambios en la web o bloqueo), se mostrará un mensaje informativo.
+        - Puedes forzar la actualización manual en cualquier momento.
+        - **No se utilizan datos ficticios.** Solo eventos auténticos.
+        """)
 # ═══════════════════════════════════════
 # PAGINA: CONFIGURACION
 # ═══════════════════════════════════════

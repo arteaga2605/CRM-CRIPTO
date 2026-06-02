@@ -151,9 +151,6 @@ class AnalyticsService:
         return alertas
 
     def daily_pnl(self, days: int = 7) -> List[Dict]:
-        """
-        Retorna el PnL realizado por día (solo ventas) para los últimos 'days' días.
-        """
         start_date = datetime.utcnow() - timedelta(days=days)
         results = self.db.query(
             func.date(Interaccion.timestamp).label('date'),
@@ -178,3 +175,25 @@ class AnalyticsService:
                 "pnl": pnl
             })
         return pnl_list
+
+    def historial_transacciones(self) -> List[Dict]:
+        """Devuelve todas las compras y ventas con detalles: moneda, tipo, cantidad, precio, monto, fecha."""
+        interacciones = self.db.query(Interaccion).filter(
+            Interaccion.tipo.in_([TipoInteraccion.COMPRA, TipoInteraccion.VENTA])
+        ).order_by(Interaccion.timestamp.desc()).all()
+        
+        resultado = []
+        for inter in interacciones:
+            cliente = inter.cliente
+            monto = float(inter.cantidad) * float(inter.precio_unitario)
+            resultado.append({
+                "moneda": cliente.symbol,
+                "tipo": inter.tipo.value,
+                "cantidad": float(inter.cantidad),
+                "precio_unitario": float(inter.precio_unitario),
+                "monto_usd": monto,
+                "fee": float(inter.fee),
+                "fecha": inter.timestamp.isoformat(),
+                "pnl_realizado": float(inter.pnl_realizado) if inter.pnl_realizado else 0
+            })
+        return resultado

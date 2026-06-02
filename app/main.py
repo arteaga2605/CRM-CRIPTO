@@ -53,7 +53,8 @@ def root():
             "daily-pnl": "/analytics/daily-pnl",
             "performance-by-category": "/analytics/performance-by-category",
             "binance-events": "/binance-events",
-            "binance-events-update": "/binance-events/update (POST)"
+            "binance-events-update": "/binance-events/update (POST)",
+            "historical-ohlcv": "/historical-ohlcv/{symbol}"
         }
     }
 
@@ -103,6 +104,12 @@ def get_performance_by_category(db: Session = Depends(get_db)):
     analytics = AnalyticsService(db)
     return analytics.rendimiento_por_categoria()
 
+@app.get("/analytics/historial-transacciones")
+def get_historial_transacciones(db: Session = Depends(get_db)):
+    """Retorna todas las interacciones (compras/ventas) con detalles."""
+    analytics = AnalyticsService(db)
+    return analytics.historial_transacciones()
+
 @app.get("/binance-events")
 def get_binance_events(limit: int = 20, db: Session = Depends(get_db)):
     service = BinanceEventService(db)
@@ -122,11 +129,22 @@ def get_binance_events(limit: int = 20, db: Session = Depends(get_db)):
 
 @app.post("/binance-events/update")
 def update_binance_events(db: Session = Depends(get_db)):
-    """Forzar la actualización manual de eventos desde Binance."""
     service = BinanceEventService(db)
     saved = service.update_events()
     if saved == 0:
-        # Si no se guardó ninguno, puede que el scraper no haya encontrado nada
-        # Pero igualmente devolvemos mensaje informativo
         return {"message": "No se encontraron nuevos eventos. Es posible que Binance haya cambiado su estructura o no haya novedades."}
     return {"message": f"Actualización completada. {saved} nuevos eventos guardados."}
+
+@app.get("/historical-ohlcv/{symbol}")
+def get_historical_ohlcv(symbol: str, days: int = 7, timeframe: str = "1h"):
+    """Retorna velas históricas de Binance para análisis."""
+    connector = ExchangeConnector()
+    # Calcular límite de velas: 24 horas * días
+    limit = 24 * days if timeframe == "1h" else 24 * days * 4  # si fuera 15m, etc. Por simplicidad, usamos 1h
+    velas = connector.obtener_velas(symbol.upper(), timeframe, limit)
+    return {
+        "symbol": symbol.upper(),
+        "timeframe": timeframe,
+        "days": days,
+        "data": velas
+    }

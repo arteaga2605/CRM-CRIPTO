@@ -11,10 +11,7 @@ from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
 import time
 from scipy.stats import pearsonr
-import multiprocessing
-
-# Forzar método spawn para evitar problemas de hilos en Windows
-multiprocessing.set_start_method('spawn', force=True)
+import numpy as np
 
 API_URL = "http://localhost:8000"
 
@@ -132,6 +129,7 @@ page = st.sidebar.radio("Navegación", [
     "📡 Mercado en Vivo",
     "🔥 Tendencias de Mercado",
     "📢 Eventos Binance",
+    "📈 Análisis y Trading",
     "⚙️ Configuracion"
 ], label_visibility="hidden")
 
@@ -210,91 +208,72 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
     return []
 
 # ═══════════════════════════════════════
-# FUNCIONES PARA TENDENCIAS Y CORRELACIONES
+# FUNCIONES PARA ANÁLISIS TÉCNICO (mejoradas)
 # ═══════════════════════════════════════
-@st.cache_data(ttl=3600)
-def obtener_simbolos_binance():
-    url = "https://api.binance.com/api/v3/exchangeInfo"
+def obtener_velas_binance(symbol, interval="1h", limit=168):
+    """
+    Obtiene velas OHLCV desde Binance directamente.
+    Por defecto: 168 velas = 7 días a 1 hora.
+    """
     try:
-        r = requests.get(url, timeout=10)
+        # Aseguramos el símbolo con USDT
+        pair = f"{symbol.upper()}USDT"
+        # Mapeo de intervalos soportados por Binance
+        interval_map = {
+            "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"
+        }
+        binance_interval = interval_map.get(interval, "1h")
+        url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={binance_interval}&limit={limit}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=15)
         if r.status_code == 200:
             data = r.json()
-            symbols = [s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT"]
-            return symbols
+            ohlcv = []
+            for candle in data:
+                ohlcv.append({
+                    "timestamp": candle[0],
+                    "datetime": datetime.fromtimestamp(candle[0]/1000).isoformat(),
+                    "open": float(candle[1]),
+                    "high": float(candle[2]),
+                    "low": float(candle[3]),
+                    "close": float(candle[4]),
+                    "volume": float(candle[5])
+                })
+            return ohlcv
         else:
-            return []
-    except:
-        return []
-
-@st.cache_data(ttl=300)
-def obtener_tendencias_coingecko():
-    url = "https://api.coingecko.com/api/v3/search/trending"
-    try:
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if "coins" in data:
-                trending = []
-                for coin in data["coins"]:
-                    item = coin["item"]
-                    trending.append({
-                        "id": item.get("id", ""),
-                        "symbol": item.get("symbol", "").upper(),
-                        "name": item.get("name", ""),
-                        "score": item.get("score", 0),
-                        "market_cap_rank": item.get("market_cap_rank", 0),
-                        "thumb": item.get("thumb", "")
-                    })
-                return trending
-            else:
-                return None
-        else:
+            st.error(f"Error {r.status_code} de Binance: {r.text[:100]}")
             return None
     except Exception as e:
-        st.error(f"Error conectando a CoinGecko: {e}")
+        st.error(f"Error al conectar con Binance: {e}")
         return None
 
-@st.cache_data(ttl=300)
-def obtener_precio_actual_coingecko(coin_id):
-    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
-    try:
-        r = requests.get(url, timeout=10)
-        if r.status_code == 200:
-            data = r.json()
-            if coin_id in data:
-                return {
-                    "price": data[coin_id].get("usd", 0),
-                    "change_24h": data[coin_id].get("usd_24h_change", 0)
-                }
-        return {"price": 0, "change_24h": 0}
-    except:
-        return {"price": 0, "change_24h": 0}
-
-@st.cache_data(ttl=3600)
-def obtener_historicos_coingecko(coin_id, days=7):
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
-    try:
-        r = requests.get(url, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            prices = data.get("prices", [])
-            df = pd.DataFrame(prices, columns=["timestamp", "price"])
-            df["date"] = pd.to_datetime(df["timestamp"], unit='ms').dt.date
-            daily_prices = df.groupby("date")["price"].last().reset_index()
-            return daily_prices["price"].tolist()
-        else:
-            return []
-    except:
-        return []
-
-def calcular_correlacion_con_btc(token_prices, btc_prices):
-    if len(token_prices) < 2 or len(btc_prices) < 2:
-        return None
-    try:
-        corr, _ = pearsonr(token_prices, btc_prices)
-        return corr
-    except:
-        return None
+def encontrar_soportes_resistencias(velas, num_niveles=3):
+    """Encuentra soportes (mínimos locales) y resistencias (máximos locales)."""
+    highs = [v["high"] for v in velas]
+    lows = [v["low"] for v in velas]
+    window = 5
+    soportes = []
+    resistencias = []
+    for i in range(window, len(lows) - window):
+        # Mínimo local (soporte)
+        if all(lows[i] <= lows[i - j] for j in range(1, window+1)) and all(lows[i] <= lows[i + j] for j in range(1, window+1)):
+            soportes.append(lows[i])
+        # Máximo local (resistencia)
+        if all(highs[i] >= highs[i - j] for j in range(1, window+1)) and all(highs[i] >= highs[i + j] for j in range(1, window+1)):
+            resistencias.append(highs[i])
+    soportes = sorted(list(set(soportes)), reverse=False)
+    resistencias = sorted(list(set(resistencias)), reverse=True)
+    precio_actual = velas[-1]["close"]
+    # Soportes cercanos por debajo
+    soportes_cercanos = [s for s in soportes if s < precio_actual][-num_niveles:]
+    if len(soportes_cercanos) < num_niveles:
+        soportes_cercanos = soportes[-num_niveles:] if soportes else []
+    # Resistencias cercanas por encima
+    resistencias_cercanas = [r for r in resistencias if r > precio_actual][:num_niveles]
+    if len(resistencias_cercanas) < num_niveles:
+        resistencias_cercanas = resistencias[:num_niveles] if resistencias else []
+    return soportes_cercanos[:num_niveles], resistencias_cercanas[:num_niveles]
 
 # Categorías actualizadas (Binance)
 CATEGORIAS = [
@@ -1083,7 +1062,7 @@ elif page == "🔥 Tendencias de Mercado":
             st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
 
 # ═══════════════════════════════════════
-# PAGINA: EVENTOS BINANCE (solo reales)
+# PAGINA: EVENTOS BINANCE
 # ═══════════════════════════════════════
 elif page == "📢 Eventos Binance":
     st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
@@ -1144,6 +1123,129 @@ elif page == "📢 Eventos Binance":
         - Puedes forzar la actualización manual en cualquier momento.
         - **No se utilizan datos ficticios.** Solo eventos auténticos.
         """)
+
+# ═══════════════════════════════════════
+# NUEVA PAGINA: ANÁLISIS Y TRADING (corregida)
+# ═══════════════════════════════════════
+elif page == "📈 Análisis y Trading":
+    st.title("📈 Análisis Técnico e Historial de Trading")
+    
+    # Crear pestañas dentro de la página
+    tab_analisis, tab_historial = st.tabs(["📊 Análisis Técnico", "📜 Historial de Transacciones"])
+    
+    # ========== PESTAÑA 1: ANÁLISIS TÉCNICO (fijo a 1 semana, sin selector de timeframe) ==========
+    with tab_analisis:
+        st.subheader("Análisis de Soportes y Resistencias (Última Semana)")
+        symbol_analisis = st.text_input("Símbolo de la moneda (ej: BTC, ETH, XRP)", value="BTC", key="analisis_symbol").upper()
+        
+        if st.button("Generar Análisis", key="analisis_btn"):
+            if not symbol_analisis:
+                st.error("Ingresa un símbolo de moneda válido")
+            else:
+                with st.spinner(f"Obteniendo datos de {symbol_analisis} desde Binance (última semana)..."):
+                    # Usamos intervalo fijo: 1 hora, 168 velas = 7 días
+                    velas = obtener_velas_binance(symbol_analisis, interval="1h", limit=168)
+                    if velas and len(velas) >= 10:
+                        # Encontrar soportes y resistencias
+                        soportes, resistencias = encontrar_soportes_resistencias(velas, num_niveles=3)
+                        
+                        # Crear gráfico de velas con líneas horizontales
+                        df_velas = pd.DataFrame(velas)
+                        df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
+                        
+                        fig = go.Figure()
+                        # Candlestick
+                        fig.add_trace(go.Candlestick(
+                            x=df_velas['timestamp'],
+                            open=df_velas['open'],
+                            high=df_velas['high'],
+                            low=df_velas['low'],
+                            close=df_velas['close'],
+                            name='Precio'
+                        ))
+                        # Líneas de soporte (verde)
+                        for i, s in enumerate(soportes):
+                            fig.add_hline(y=s, line_dash="dash", line_color="green", 
+                                          annotation_text=f"Soporte {i+1} (${s:.2f})", 
+                                          annotation_position="bottom right")
+                        # Líneas de resistencia (rojo)
+                        for i, r in enumerate(resistencias):
+                            fig.add_hline(y=r, line_dash="dash", line_color="red", 
+                                          annotation_text=f"Resistencia {i+1} (${r:.2f})", 
+                                          annotation_position="top right")
+                        
+                        fig.update_layout(
+                            title=f"{symbol_analisis}/USDT - Velas cada hora (Última semana)",
+                            xaxis_title="Fecha",
+                            yaxis_title="Precio (USD)",
+                            height=600,
+                            template="plotly_dark"
+                        )
+                        st.plotly_chart(fig, width='stretch')
+                        
+                        # Mostrar tabla de niveles
+                        col_s, col_r = st.columns(2)
+                        with col_s:
+                            st.subheader("📉 Soportes detectados")
+                            if soportes:
+                                st.write(pd.DataFrame({"Soporte (USD)": [f"${s:.2f}" for s in soportes]}))
+                            else:
+                                st.info("No se detectaron soportes claros en el período.")
+                        with col_r:
+                            st.subheader("📈 Resistencias detectadas")
+                            if resistencias:
+                                st.write(pd.DataFrame({"Resistencia (USD)": [f"${r:.2f}" for r in resistencias]}))
+                            else:
+                                st.info("No se detectaron resistencias claras en el período.")
+                    else:
+                        st.error(f"No se pudieron obtener datos de {symbol_analisis}. Verifica el símbolo o inténtalo más tarde.")
+    
+    # ========== PESTAÑA 2: HISTORIAL DE TRANSACCIONES (sin cambios) ==========
+    with tab_historial:
+        st.subheader("Todas las compras y ventas registradas")
+        
+        with st.spinner("Cargando historial de transacciones..."):
+            clientes_list = fetch("/clientes/")
+            if clientes_list:
+                all_transactions = []
+                for cliente in clientes_list:
+                    symbol = cliente["symbol"]
+                    interacciones = fetch(f"/interacciones/cliente/{symbol}")
+                    if interacciones:
+                        for t in interacciones:
+                            if t["tipo"] in ["compra", "venta"]:
+                                all_transactions.append({
+                                    "Moneda": symbol,
+                                    "Tipo": t["tipo"].upper(),
+                                    "Cantidad": float(t["cantidad"]),
+                                    "Precio Unitario (USD)": float(t["precio_unitario"]),
+                                    "Monto (USD)": float(t["monto_usd"]),
+                                    "Fee (USD)": float(t["fee"]),
+                                    "Fecha": t["timestamp"][:16] if t["timestamp"] else "",
+                                    "PnL Realizado (USD)": float(t["pnl_realizado"]) if t["tipo"] == "venta" else 0
+                                })
+                if all_transactions:
+                    df_hist = pd.DataFrame(all_transactions)
+                    df_hist = df_hist.sort_values("Fecha", ascending=False)
+                    st.dataframe(df_hist, width='stretch')
+                    
+                    # Resumen
+                    total_comprado = df_hist[df_hist["Tipo"] == "COMPRA"]["Monto (USD)"].sum()
+                    total_vendido = df_hist[df_hist["Tipo"] == "VENTA"]["Monto (USD)"].sum()
+                    total_pnl = df_hist["PnL Realizado (USD)"].sum()
+                    total_fees = df_hist["Fee (USD)"].sum()
+                    
+                    st.subheader("📊 Resumen")
+                    col_a, col_b, col_c, col_d = st.columns(4)
+                    col_a.metric("Total Comprado", f"${total_comprado:,.2f}")
+                    col_b.metric("Total Vendido", f"${total_vendido:,.2f}")
+                    col_c.metric("Total PnL Realizado", f"${total_pnl:,.2f}", delta_color="normal")
+                    col_d.metric("Total Comisiones", f"${total_fees:,.2f}")
+                else:
+                    st.info("No hay transacciones de compra/venta registradas todavía.")
+            else:
+                st.info("No hay clientes registrados aún.")
+
 # ═══════════════════════════════════════
 # PAGINA: CONFIGURACION
 # ═══════════════════════════════════════

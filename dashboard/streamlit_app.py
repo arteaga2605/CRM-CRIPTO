@@ -208,22 +208,20 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
     return []
 
 # ═══════════════════════════════════════
-# FUNCIONES PARA ANÁLISIS TÉCNICO (mejoradas)
+# FUNCIONES PARA ANÁLISIS TÉCNICO (1 mes, velas diarias)
 # ═══════════════════════════════════════
-def obtener_velas_binance(symbol, interval="1h", limit=168):
+def obtener_velas_binance(symbol, interval="1d", limit=30):
     """
     Obtiene velas OHLCV desde Binance directamente.
-    Por defecto: 168 velas = 7 días a 1 hora.
+    Por defecto: 30 velas diarias = 1 mes.
     """
     try:
-        # Aseguramos el símbolo con USDT
         pair = f"{symbol.upper()}USDT"
-        # Mapeo de intervalos soportados por Binance
         interval_map = {
             "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
             "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"
         }
-        binance_interval = interval_map.get(interval, "1h")
+        binance_interval = interval_map.get(interval, "1d")
         url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={binance_interval}&limit={limit}"
         headers = {"User-Agent": "Mozilla/5.0"}
         r = requests.get(url, headers=headers, timeout=15)
@@ -249,30 +247,38 @@ def obtener_velas_binance(symbol, interval="1h", limit=168):
         return None
 
 def encontrar_soportes_resistencias(velas, num_niveles=3):
-    """Encuentra soportes (mínimos locales) y resistencias (máximos locales)."""
+    """Encuentra soportes (mínimos locales) y resistencias (máximos locales) con ventana dinámica."""
     highs = [v["high"] for v in velas]
     lows = [v["low"] for v in velas]
-    window = 5
+    n = len(velas)
+    # Ventana dinámica: mínimo 2, máximo 5, proporcional al 10% de los datos
+    window = max(2, min(5, n // 10))
     soportes = []
     resistencias = []
-    for i in range(window, len(lows) - window):
+    
+    for i in range(window, n - window):
         # Mínimo local (soporte)
         if all(lows[i] <= lows[i - j] for j in range(1, window+1)) and all(lows[i] <= lows[i + j] for j in range(1, window+1)):
             soportes.append(lows[i])
         # Máximo local (resistencia)
         if all(highs[i] >= highs[i - j] for j in range(1, window+1)) and all(highs[i] >= highs[i + j] for j in range(1, window+1)):
             resistencias.append(highs[i])
+    
+    # Eliminar duplicados y ordenar
     soportes = sorted(list(set(soportes)), reverse=False)
     resistencias = sorted(list(set(resistencias)), reverse=True)
+    
     precio_actual = velas[-1]["close"]
-    # Soportes cercanos por debajo
+    
+    # Seleccionar los niveles más cercanos al precio actual
     soportes_cercanos = [s for s in soportes if s < precio_actual][-num_niveles:]
-    if len(soportes_cercanos) < num_niveles:
-        soportes_cercanos = soportes[-num_niveles:] if soportes else []
-    # Resistencias cercanas por encima
+    if len(soportes_cercanos) < num_niveles and soportes:
+        # Si faltan, tomar los más altos entre todos los soportes
+        soportes_cercanos = soportes[-num_niveles:] if len(soportes) >= num_niveles else soportes
     resistencias_cercanas = [r for r in resistencias if r > precio_actual][:num_niveles]
-    if len(resistencias_cercanas) < num_niveles:
-        resistencias_cercanas = resistencias[:num_niveles] if resistencias else []
+    if len(resistencias_cercanas) < num_niveles and resistencias:
+        resistencias_cercanas = resistencias[:num_niveles] if len(resistencias) >= num_niveles else resistencias
+    
     return soportes_cercanos[:num_niveles], resistencias_cercanas[:num_niveles]
 
 # Categorías actualizadas (Binance)
@@ -1125,36 +1131,56 @@ elif page == "📢 Eventos Binance":
         """)
 
 # ═══════════════════════════════════════
-# NUEVA PAGINA: ANÁLISIS Y TRADING (corregida)
+# PAGINA: ANÁLISIS Y TRADING (1 mes, velas diarias)
 # ═══════════════════════════════════════
 elif page == "📈 Análisis y Trading":
     st.title("📈 Análisis Técnico e Historial de Trading")
     
-    # Crear pestañas dentro de la página
     tab_analisis, tab_historial = st.tabs(["📊 Análisis Técnico", "📜 Historial de Transacciones"])
     
-    # ========== PESTAÑA 1: ANÁLISIS TÉCNICO (fijo a 1 semana, sin selector de timeframe) ==========
+    # ========== PESTAÑA 1: ANÁLISIS TÉCNICO (1 MES, VELAS DIARIAS) ==========
     with tab_analisis:
-        st.subheader("Análisis de Soportes y Resistencias (Última Semana)")
-        symbol_analisis = st.text_input("Símbolo de la moneda (ej: BTC, ETH, XRP)", value="BTC", key="analisis_symbol").upper()
+        st.subheader("Análisis de Soportes y Resistencias")
+        col1, col2 = st.columns(2)
+        with col1:
+            symbol_analisis = st.text_input("Símbolo de la moneda (ej: BTC, ETH, XRP)", value="BTC", key="analisis_symbol").upper()
+        with col2:
+            temporalidad = st.selectbox("Temporalidad", ["1H", "4H", "1D", "1S (Semana)", "1M (Mes)"], index=2, key="analisis_temporalidad")
         
         if st.button("Generar Análisis", key="analisis_btn"):
             if not symbol_analisis:
                 st.error("Ingresa un símbolo de moneda válido")
             else:
-                with st.spinner(f"Obteniendo datos de {symbol_analisis} desde Binance (última semana)..."):
-                    # Usamos intervalo fijo: 1 hora, 168 velas = 7 días
-                    velas = obtener_velas_binance(symbol_analisis, interval="1h", limit=168)
-                    if velas and len(velas) >= 10:
-                        # Encontrar soportes y resistencias
+                # Mapear temporalidad a intervalo y límite
+                if temporalidad == "1H":
+                    intervalo = "1h"
+                    limite = 168  # 7 días
+                    periodo_texto = "última semana (velas de 1 hora)"
+                elif temporalidad == "4H":
+                    intervalo = "4h"
+                    limite = 42   # 7 días
+                    periodo_texto = "última semana (velas de 4 horas)"
+                elif temporalidad == "1D":
+                    intervalo = "1d"
+                    limite = 30   # 1 mes
+                    periodo_texto = "último mes (velas diarias)"
+                elif temporalidad == "1S (Semana)":
+                    intervalo = "1w"
+                    limite = 12   # 3 meses
+                    periodo_texto = "últimos 3 meses (velas semanales)"
+                else:  # "1M (Mes)"
+                    intervalo = "1d"
+                    limite = 30   # 1 mes (mismo que 1D)
+                    periodo_texto = "último mes (velas diarias)"
+                
+                with st.spinner(f"Obteniendo datos de {symbol_analisis} desde Binance ({periodo_texto})..."):
+                    velas = obtener_velas_binance(symbol_analisis, interval=intervalo, limit=limite)
+                    if velas and len(velas) >= 5:
                         soportes, resistencias = encontrar_soportes_resistencias(velas, num_niveles=3)
-                        
-                        # Crear gráfico de velas con líneas horizontales
                         df_velas = pd.DataFrame(velas)
                         df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
                         
                         fig = go.Figure()
-                        # Candlestick
                         fig.add_trace(go.Candlestick(
                             x=df_velas['timestamp'],
                             open=df_velas['open'],
@@ -1163,19 +1189,16 @@ elif page == "📈 Análisis y Trading":
                             close=df_velas['close'],
                             name='Precio'
                         ))
-                        # Líneas de soporte (verde)
                         for i, s in enumerate(soportes):
-                            fig.add_hline(y=s, line_dash="dash", line_color="green", 
-                                          annotation_text=f"Soporte {i+1} (${s:.2f})", 
+                            fig.add_hline(y=s, line_dash="dash", line_color="green",
+                                          annotation_text=f"Soporte {i+1} (${s:.2f})",
                                           annotation_position="bottom right")
-                        # Líneas de resistencia (rojo)
                         for i, r in enumerate(resistencias):
-                            fig.add_hline(y=r, line_dash="dash", line_color="red", 
-                                          annotation_text=f"Resistencia {i+1} (${r:.2f})", 
+                            fig.add_hline(y=r, line_dash="dash", line_color="red",
+                                          annotation_text=f"Resistencia {i+1} (${r:.2f})",
                                           annotation_position="top right")
-                        
                         fig.update_layout(
-                            title=f"{symbol_analisis}/USDT - Velas cada hora (Última semana)",
+                            title=f"{symbol_analisis}/USDT - {periodo_texto.capitalize()}",
                             xaxis_title="Fecha",
                             yaxis_title="Precio (USD)",
                             height=600,
@@ -1183,7 +1206,6 @@ elif page == "📈 Análisis y Trading":
                         )
                         st.plotly_chart(fig, width='stretch')
                         
-                        # Mostrar tabla de niveles
                         col_s, col_r = st.columns(2)
                         with col_s:
                             st.subheader("📉 Soportes detectados")
@@ -1203,7 +1225,6 @@ elif page == "📈 Análisis y Trading":
     # ========== PESTAÑA 2: HISTORIAL DE TRANSACCIONES (sin cambios) ==========
     with tab_historial:
         st.subheader("Todas las compras y ventas registradas")
-        
         with st.spinner("Cargando historial de transacciones..."):
             clientes_list = fetch("/clientes/")
             if clientes_list:
@@ -1229,7 +1250,6 @@ elif page == "📈 Análisis y Trading":
                     df_hist = df_hist.sort_values("Fecha", ascending=False)
                     st.dataframe(df_hist, width='stretch')
                     
-                    # Resumen
                     total_comprado = df_hist[df_hist["Tipo"] == "COMPRA"]["Monto (USD)"].sum()
                     total_vendido = df_hist[df_hist["Tipo"] == "VENTA"]["Monto (USD)"].sum()
                     total_pnl = df_hist["PnL Realizado (USD)"].sum()

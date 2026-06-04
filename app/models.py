@@ -158,21 +158,35 @@ class Tarea(Base):
     def __repr__(self):
         return f"<Tarea({self.cliente.symbol}: {self.tipo_tarea})>"
 
-# ─── EVENTOS DE BINANCE (Launchpool, Megadrop, nuevos listados) ───
+# ─── EVENTOS DE BINANCE ───
 class BinanceEvent(Base):
     __tablename__ = "binance_events"
 
     id = Column(Integer, primary_key=True)
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    event_type = Column(String(50), nullable=False)  # "launchpool", "megadrop", "new_listing", "announcement"
+    event_type = Column(String(50), nullable=False)
     url = Column(String(500), nullable=True)
-    event_date = Column(DateTime, nullable=True)    # fecha del evento (si se puede extraer)
+    event_date = Column(DateTime, nullable=True)
     detected_at = Column(DateTime, default=datetime.utcnow)
-    is_active = Column(Boolean, default=True)       # si el evento sigue vigente
+    is_active = Column(Boolean, default=True)
 
     def __repr__(self):
         return f"<BinanceEvent({self.event_type}: {self.title})>"
+
+# ─── NOTIFICACIONES ───
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True)
+    message = Column(String(500), nullable=False)
+    type = Column(String(50), nullable=False)  # price_alert, trend_change, opportunity, task_reminder
+    related_id = Column(Integer, nullable=True)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Notification({self.type}: {self.message[:50]})>"
 
 # ─── CONFIGURACION DB ───
 DATABASE_URL = "sqlite:///./crypto_crm.db"
@@ -180,5 +194,4 @@ engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def init_db():
-    # create_all no borra datos existentes, solo añade nuevas tablas
     Base.metadata.create_all(bind=engine)

@@ -23,6 +23,238 @@ st.set_page_config(
 )
 
 # ═══════════════════════════════════════
+# FUNCIONES AUXILIARES
+# ═══════════════════════════════════════
+def fetch(endpoint):
+    try:
+        r = requests.get(f"{API_URL}{endpoint}")
+        return r.json()
+    except:
+        st.error("No se puede conectar a la API. Asegurate de que FastAPI este corriendo en puerto 8000")
+        return None
+
+def post(endpoint, data):
+    try:
+        r = requests.post(f"{API_URL}{endpoint}", json=data)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en POST: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en POST: {e}")
+        return None
+
+def put(endpoint, data):
+    try:
+        r = requests.put(f"{API_URL}{endpoint}", json=data)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en PUT: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en PUT: {e}")
+        return None
+
+def delete(endpoint):
+    try:
+        r = requests.delete(f"{API_URL}{endpoint}")
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en DELETE: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en DELETE: {e}")
+        return None
+
+def obtener_precio_real(symbol):
+    try:
+        r = requests.get(f"{API_URL}/precios/{symbol}")
+        if r.status_code == 200:
+            return r.json().get("price", 0)
+    except:
+        pass
+    return 0
+
+def obtener_ticker_real(symbol):
+    try:
+        r = requests.get(f"{API_URL}/ticker/{symbol}")
+        if r.status_code == 200:
+            return r.json()
+    except:
+        pass
+    return {}
+
+def obtener_velas(symbol, timeframe="1h", limit=100):
+    try:
+        r = requests.get(f"{API_URL}/velas/{symbol}", params={"timeframe": timeframe, "limit": limit})
+        if r.status_code == 200:
+            return r.json().get("data", [])
+    except:
+        pass
+    return []
+
+# ═══════════════════════════════════════
+# FUNCIONES PARA ANÁLISIS TÉCNICO
+# ═══════════════════════════════════════
+def obtener_velas_binance(symbol, interval="1d", limit=30):
+    """
+    Obtiene velas OHLCV directamente desde Binance.
+    Por defecto: interval="1d", limit=30 (último mes)
+    """
+    try:
+        pair = f"{symbol.upper()}USDT"
+        interval_map = {
+            "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"
+        }
+        binance_interval = interval_map.get(interval, "1d")
+        url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={binance_interval}&limit={limit}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            ohlcv = []
+            for candle in data:
+                ohlcv.append({
+                    "timestamp": candle[0],
+                    "datetime": datetime.fromtimestamp(candle[0]/1000).isoformat(),
+                    "open": float(candle[1]),
+                    "high": float(candle[2]),
+                    "low": float(candle[3]),
+                    "close": float(candle[4]),
+                    "volume": float(candle[5])
+                })
+            return ohlcv
+        else:
+            st.error(f"Error {r.status_code} de Binance: {r.text[:100]}")
+            return None
+    except Exception as e:
+        st.error(f"Error al conectar con Binance: {e}")
+        return None
+
+def encontrar_soportes_resistencias(velas, num_niveles=3):
+    """Encuentra soportes (mínimos locales) y resistencias (máximos locales) con ventana dinámica."""
+    highs = [v["high"] for v in velas]
+    lows = [v["low"] for v in velas]
+    n = len(velas)
+    window = max(2, min(5, n // 10))
+    soportes = []
+    resistencias = []
+    for i in range(window, n - window):
+        if all(lows[i] <= lows[i - j] for j in range(1, window+1)) and all(lows[i] <= lows[i + j] for j in range(1, window+1)):
+            soportes.append(lows[i])
+        if all(highs[i] >= highs[i - j] for j in range(1, window+1)) and all(highs[i] >= highs[i + j] for j in range(1, window+1)):
+            resistencias.append(highs[i])
+    soportes = sorted(list(set(soportes)), reverse=False)
+    resistencias = sorted(list(set(resistencias)), reverse=True)
+    precio_actual = velas[-1]["close"]
+    soportes_cercanos = [s for s in soportes if s < precio_actual][-num_niveles:]
+    if len(soportes_cercanos) < num_niveles and soportes:
+        soportes_cercanos = soportes[-num_niveles:] if len(soportes) >= num_niveles else soportes
+    resistencias_cercanas = [r for r in resistencias if r > precio_actual][:num_niveles]
+    if len(resistencias_cercanas) < num_niveles and resistencias:
+        resistencias_cercanas = resistencias[:num_niveles] if len(resistencias) >= num_niveles else resistencias
+    return soportes_cercanos[:num_niveles], resistencias_cercanas[:num_niveles]
+
+# ═══════════════════════════════════════
+# FUNCIONES PARA TENDENCIAS Y CORRELACIONES
+# ═══════════════════════════════════════
+@st.cache_data(ttl=3600)
+def obtener_simbolos_binance():
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            symbols = [s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT"]
+            return symbols
+        else:
+            return []
+    except:
+        return []
+
+@st.cache_data(ttl=300)
+def obtener_tendencias_coingecko():
+    url = "https://api.coingecko.com/api/v3/search/trending"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if "coins" in data:
+                trending = []
+                for coin in data["coins"]:
+                    item = coin["item"]
+                    trending.append({
+                        "id": item.get("id", ""),
+                        "symbol": item.get("symbol", "").upper(),
+                        "name": item.get("name", ""),
+                        "score": item.get("score", 0),
+                        "market_cap_rank": item.get("market_cap_rank", 0),
+                        "thumb": item.get("thumb", "")
+                    })
+                return trending
+            else:
+                return None
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Error conectando a CoinGecko: {e}")
+        return None
+
+@st.cache_data(ttl=300)
+def obtener_precio_actual_coingecko(coin_id):
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if coin_id in data:
+                return {
+                    "price": data[coin_id].get("usd", 0),
+                    "change_24h": data[coin_id].get("usd_24h_change", 0)
+                }
+        return {"price": 0, "change_24h": 0}
+    except:
+        return {"price": 0, "change_24h": 0}
+
+@st.cache_data(ttl=3600)
+def obtener_historicos_coingecko(coin_id, days=7):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            prices = data.get("prices", [])
+            df = pd.DataFrame(prices, columns=["timestamp", "price"])
+            df["date"] = pd.to_datetime(df["timestamp"], unit='ms').dt.date
+            daily_prices = df.groupby("date")["price"].last().reset_index()
+            return daily_prices["price"].tolist()
+        else:
+            return []
+    except:
+        return []
+
+def calcular_correlacion_con_btc(token_prices, btc_prices):
+    if len(token_prices) < 2 or len(btc_prices) < 2:
+        return None
+    try:
+        corr, _ = pearsonr(token_prices, btc_prices)
+        return corr
+    except:
+        return None
+
+# Categorías actualizadas (Binance)
+CATEGORIAS = [
+    "BNB Chain", "Solana", "RWA", "MEME", "Pagos", "IA",
+    "Capa 1/Capa 2", "Fase semilla", "Launchpool", "New", "Megadrop",
+    "Juegos", "DeFi", "En observación", "Fan Token", "Infraestructura",
+    "Almacenamiento", "NFT", "Launchpad", "Yzi", "desconocida"
+]
+
+# ═══════════════════════════════════════
 # ESTILOS PERSONALIZADOS PARA EL SIDEBAR
 # ═══════════════════════════════════════
 st.markdown("""
@@ -115,6 +347,36 @@ if auto_refresh:
 else:
     st.sidebar.info("Desactivado. Usa los botones 'Actualizar' en cada sección.")
 
+# ========== NOTIFICACIONES ==========
+try:
+    notificaciones = fetch("/notifications?unread_only=true&limit=10")
+    if notificaciones and isinstance(notificaciones, list):
+        unread_count = len(notificaciones)
+        for notif in notificaciones:
+            st.toast(notif["message"], icon="🔔")
+    else:
+        unread_count = 0
+except:
+    unread_count = 0
+
+col_bell, col_text = st.sidebar.columns([1, 3])
+with col_bell:
+    st.markdown(f"🔔", unsafe_allow_html=True)
+with col_text:
+    st.markdown(f"**Notificaciones** ({unread_count} nuevas)")
+
+if st.sidebar.button("📋 Ver notificaciones"):
+    with st.sidebar.expander("📢 Últimas notificaciones", expanded=True):
+        notifs = fetch("/notifications?limit=20")
+        if notifs:
+            for n in notifs:
+                st.markdown(f"- {n['created_at'][:16]} – {n['message']}")
+            if st.button("Marcar todas como leídas"):
+                requests.post(f"{API_URL}/notifications/read-all")
+                st.rerun()
+        else:
+            st.info("No hay notificaciones.")
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🧭 Navegación")
 
@@ -134,163 +396,7 @@ page = st.sidebar.radio("Navegación", [
 ], label_visibility="hidden")
 
 # ═══════════════════════════════════════
-# FUNCIONES AUXILIARES
-# ═══════════════════════════════════════
-def fetch(endpoint):
-    try:
-        r = requests.get(f"{API_URL}{endpoint}")
-        return r.json()
-    except:
-        st.error("No se puede conectar a la API. Asegurate de que FastAPI este corriendo en puerto 8000")
-        return None
-
-def post(endpoint, data):
-    try:
-        r = requests.post(f"{API_URL}{endpoint}", json=data)
-        if r.status_code == 200:
-            return r.json()
-        else:
-            st.error(f"Error {r.status_code} en POST: {r.text[:200]}")
-            return None
-    except Exception as e:
-        st.error(f"Error en POST: {e}")
-        return None
-
-def put(endpoint, data):
-    try:
-        r = requests.put(f"{API_URL}{endpoint}", json=data)
-        if r.status_code == 200:
-            return r.json()
-        else:
-            st.error(f"Error {r.status_code} en PUT: {r.text[:200]}")
-            return None
-    except Exception as e:
-        st.error(f"Error en PUT: {e}")
-        return None
-
-def delete(endpoint):
-    try:
-        r = requests.delete(f"{API_URL}{endpoint}")
-        if r.status_code == 200:
-            return r.json()
-        else:
-            st.error(f"Error {r.status_code} en DELETE: {r.text[:200]}")
-            return None
-    except Exception as e:
-        st.error(f"Error en DELETE: {e}")
-        return None
-
-def obtener_precio_real(symbol):
-    try:
-        r = requests.get(f"{API_URL}/precios/{symbol}")
-        if r.status_code == 200:
-            return r.json().get("price", 0)
-    except:
-        pass
-    return 0
-
-def obtener_ticker_real(symbol):
-    try:
-        r = requests.get(f"{API_URL}/ticker/{symbol}")
-        if r.status_code == 200:
-            return r.json()
-    except:
-        pass
-    return {}
-
-def obtener_velas(symbol, timeframe="1h", limit=100):
-    try:
-        r = requests.get(f"{API_URL}/velas/{symbol}", params={"timeframe": timeframe, "limit": limit})
-        if r.status_code == 200:
-            return r.json().get("data", [])
-    except:
-        pass
-    return []
-
-# ═══════════════════════════════════════
-# FUNCIONES PARA ANÁLISIS TÉCNICO (1 mes, velas diarias)
-# ═══════════════════════════════════════
-def obtener_velas_binance(symbol, interval="1d", limit=30):
-    """
-    Obtiene velas OHLCV desde Binance directamente.
-    Por defecto: 30 velas diarias = 1 mes.
-    """
-    try:
-        pair = f"{symbol.upper()}USDT"
-        interval_map = {
-            "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
-            "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"
-        }
-        binance_interval = interval_map.get(interval, "1d")
-        url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={binance_interval}&limit={limit}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=15)
-        if r.status_code == 200:
-            data = r.json()
-            ohlcv = []
-            for candle in data:
-                ohlcv.append({
-                    "timestamp": candle[0],
-                    "datetime": datetime.fromtimestamp(candle[0]/1000).isoformat(),
-                    "open": float(candle[1]),
-                    "high": float(candle[2]),
-                    "low": float(candle[3]),
-                    "close": float(candle[4]),
-                    "volume": float(candle[5])
-                })
-            return ohlcv
-        else:
-            st.error(f"Error {r.status_code} de Binance: {r.text[:100]}")
-            return None
-    except Exception as e:
-        st.error(f"Error al conectar con Binance: {e}")
-        return None
-
-def encontrar_soportes_resistencias(velas, num_niveles=3):
-    """Encuentra soportes (mínimos locales) y resistencias (máximos locales) con ventana dinámica."""
-    highs = [v["high"] for v in velas]
-    lows = [v["low"] for v in velas]
-    n = len(velas)
-    # Ventana dinámica: mínimo 2, máximo 5, proporcional al 10% de los datos
-    window = max(2, min(5, n // 10))
-    soportes = []
-    resistencias = []
-    
-    for i in range(window, n - window):
-        # Mínimo local (soporte)
-        if all(lows[i] <= lows[i - j] for j in range(1, window+1)) and all(lows[i] <= lows[i + j] for j in range(1, window+1)):
-            soportes.append(lows[i])
-        # Máximo local (resistencia)
-        if all(highs[i] >= highs[i - j] for j in range(1, window+1)) and all(highs[i] >= highs[i + j] for j in range(1, window+1)):
-            resistencias.append(highs[i])
-    
-    # Eliminar duplicados y ordenar
-    soportes = sorted(list(set(soportes)), reverse=False)
-    resistencias = sorted(list(set(resistencias)), reverse=True)
-    
-    precio_actual = velas[-1]["close"]
-    
-    # Seleccionar los niveles más cercanos al precio actual
-    soportes_cercanos = [s for s in soportes if s < precio_actual][-num_niveles:]
-    if len(soportes_cercanos) < num_niveles and soportes:
-        # Si faltan, tomar los más altos entre todos los soportes
-        soportes_cercanos = soportes[-num_niveles:] if len(soportes) >= num_niveles else soportes
-    resistencias_cercanas = [r for r in resistencias if r > precio_actual][:num_niveles]
-    if len(resistencias_cercanas) < num_niveles and resistencias:
-        resistencias_cercanas = resistencias[:num_niveles] if len(resistencias) >= num_niveles else resistencias
-    
-    return soportes_cercanos[:num_niveles], resistencias_cercanas[:num_niveles]
-
-# Categorías actualizadas (Binance)
-CATEGORIAS = [
-    "BNB Chain", "Solana", "RWA", "MEME", "Pagos", "IA",
-    "Capa 1/Capa 2", "Fase semilla", "Launchpool", "New", "Megadrop",
-    "Juegos", "DeFi", "En observación", "Fan Token", "Infraestructura",
-    "Almacenamiento", "NFT", "Launchpad", "Yzi", "desconocida"
-]
-
-# ═══════════════════════════════════════
-# PAGINA: DASHBOARD
+# PÁGINA: DASHBOARD
 # ═══════════════════════════════════════
 if page == "🏠 Dashboard":
     st.title("📊 Dashboard Principal")
@@ -368,7 +474,7 @@ if page == "🏠 Dashboard":
             st.success("No hay alertas activas. Todo en orden! 🎉")
 
 # ═══════════════════════════════════════
-# PAGINA: CLIENTES
+# PÁGINA: CLIENTES
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
@@ -539,7 +645,7 @@ elif page == "👥 Clientes":
                         st.rerun()
 
 # ═══════════════════════════════════════
-# PAGINA: INTERACCIONES
+# PÁGINA: INTERACCIONES
 # ═══════════════════════════════════════
 elif page == "💱 Interacciones":
     st.title("💱 Registro de Interacciones (FIFO para ventas)")
@@ -606,7 +712,7 @@ elif page == "💱 Interacciones":
             st.info("No hay interacciones para este cliente.")
 
 # ═══════════════════════════════════════
-# PAGINA: OPORTUNIDADES
+# PÁGINA: OPORTUNIDADES
 # ═══════════════════════════════════════
 elif page == "🎯 Oportunidades":
     st.title("🎯 Pipeline de Oportunidades")
@@ -695,7 +801,7 @@ elif page == "🎯 Oportunidades":
         st.info("No hay oportunidades abiertas. Crea una nueva usando el formulario de arriba.")
 
 # ═══════════════════════════════════════
-# PAGINA: TAREAS
+# PÁGINA: TAREAS
 # ═══════════════════════════════════════
 elif page == "✅ Tareas":
     st.title("✅ Tareas y Alertas")
@@ -768,11 +874,26 @@ elif page == "✅ Tareas":
     else:
         st.success("No hay tareas pendientes. ¡Todo al día! 🎉")
     
-    with st.expander("Ver tareas completadas (últimas 10)"):
-        st.info("Funcionalidad en desarrollo: próximamente podrás ver el historial de tareas completadas.")
+    with st.expander("📜 Ver tareas completadas (últimas 10)"):
+        with st.spinner("Cargando historial de tareas completadas..."):
+            tareas_completadas = fetch("/tareas/completadas?limit=10")
+            if tareas_completadas:
+                if isinstance(tareas_completadas, list) and len(tareas_completadas) > 0:
+                    df_completadas = pd.DataFrame([{
+                        "ID": t["id"],
+                        "Cliente ID": t.get("cliente_id", ""),
+                        "Tipo": t.get("tipo_tarea", ""),
+                        "Descripción": t.get("descripcion", ""),
+                        "Completada el": t.get("fecha_completada", "")[:16] if t.get("fecha_completada") else "Fecha no registrada"
+                    } for t in tareas_completadas])
+                    st.dataframe(df_completadas, width='stretch')
+                else:
+                    st.info("No hay tareas completadas para mostrar.")
+            else:
+                st.info("No se pudieron cargar las tareas completadas. Asegúrate de que la API esté corriendo.")
 
 # ═══════════════════════════════════════
-# PAGINA: LOTES FIFO
+# PÁGINA: LOTES FIFO
 # ═══════════════════════════════════════
 elif page == "📦 Lotes FIFO":
     st.title("📦 Lotes de Compra (FIFO)")
@@ -800,7 +921,7 @@ elif page == "📦 Lotes FIFO":
             st.write("No hay lotes para este cliente.")
 
 # ═══════════════════════════════════════
-# PAGINA: ANALYTICS
+# PÁGINA: ANALYTICS
 # ═══════════════════════════════════════
 elif page == "📈 Analytics":
     st.title("📈 Analytics y Reportes")
@@ -864,7 +985,7 @@ elif page == "📈 Analytics":
         st.info("No se pudieron cargar los datos de PnL diario.")
 
 # ═══════════════════════════════════════
-# PAGINA: MERCADO EN VIVO
+# PÁGINA: MERCADO EN VIVO
 # ═══════════════════════════════════════
 elif page == "📡 Mercado en Vivo":
     st.title("📡 Datos Reales de Binance")
@@ -952,7 +1073,7 @@ elif page == "📡 Mercado en Vivo":
         st.error("No se pudo obtener información del ticker. Intenta con otro símbolo.")
 
 # ═══════════════════════════════════════
-# PAGINA: TENDENCIAS DE MERCADO (CoinGecko)
+# PÁGINA: TENDENCIAS DE MERCADO (CoinGecko)
 # ═══════════════════════════════════════
 elif page == "🔥 Tendencias de Mercado":
     st.title("🔥 Tendencias de Mercado (CoinGecko)")
@@ -1068,7 +1189,7 @@ elif page == "🔥 Tendencias de Mercado":
             st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
 
 # ═══════════════════════════════════════
-# PAGINA: EVENTOS BINANCE
+# PÁGINA: EVENTOS BINANCE
 # ═══════════════════════════════════════
 elif page == "📢 Eventos Binance":
     st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
@@ -1131,14 +1252,14 @@ elif page == "📢 Eventos Binance":
         """)
 
 # ═══════════════════════════════════════
-# PAGINA: ANÁLISIS Y TRADING (1 mes, velas diarias)
+# PÁGINA: ANÁLISIS Y TRADING
 # ═══════════════════════════════════════
 elif page == "📈 Análisis y Trading":
     st.title("📈 Análisis Técnico e Historial de Trading")
     
     tab_analisis, tab_historial = st.tabs(["📊 Análisis Técnico", "📜 Historial de Transacciones"])
     
-    # ========== PESTAÑA 1: ANÁLISIS TÉCNICO (1 MES, VELAS DIARIAS) ==========
+    # ========== PESTAÑA 1: ANÁLISIS TÉCNICO ==========
     with tab_analisis:
         st.subheader("Análisis de Soportes y Resistencias")
         col1, col2 = st.columns(2)
@@ -1151,26 +1272,25 @@ elif page == "📈 Análisis y Trading":
             if not symbol_analisis:
                 st.error("Ingresa un símbolo de moneda válido")
             else:
-                # Mapear temporalidad a intervalo y límite
                 if temporalidad == "1H":
                     intervalo = "1h"
-                    limite = 168  # 7 días
+                    limite = 168
                     periodo_texto = "última semana (velas de 1 hora)"
                 elif temporalidad == "4H":
                     intervalo = "4h"
-                    limite = 42   # 7 días
+                    limite = 42
                     periodo_texto = "última semana (velas de 4 horas)"
                 elif temporalidad == "1D":
                     intervalo = "1d"
-                    limite = 30   # 1 mes
+                    limite = 30
                     periodo_texto = "último mes (velas diarias)"
                 elif temporalidad == "1S (Semana)":
                     intervalo = "1w"
-                    limite = 12   # 3 meses
+                    limite = 12
                     periodo_texto = "últimos 3 meses (velas semanales)"
                 else:  # "1M (Mes)"
                     intervalo = "1d"
-                    limite = 30   # 1 mes (mismo que 1D)
+                    limite = 30
                     periodo_texto = "último mes (velas diarias)"
                 
                 with st.spinner(f"Obteniendo datos de {symbol_analisis} desde Binance ({periodo_texto})..."):
@@ -1222,7 +1342,7 @@ elif page == "📈 Análisis y Trading":
                     else:
                         st.error(f"No se pudieron obtener datos de {symbol_analisis}. Verifica el símbolo o inténtalo más tarde.")
     
-    # ========== PESTAÑA 2: HISTORIAL DE TRANSACCIONES (sin cambios) ==========
+    # ========== PESTAÑA 2: HISTORIAL DE TRANSACCIONES ==========
     with tab_historial:
         st.subheader("Todas las compras y ventas registradas")
         with st.spinner("Cargando historial de transacciones..."):
@@ -1267,7 +1387,7 @@ elif page == "📈 Análisis y Trading":
                 st.info("No hay clientes registrados aún.")
 
 # ═══════════════════════════════════════
-# PAGINA: CONFIGURACION
+# PÁGINA: CONFIGURACION
 # ═══════════════════════════════════════
 elif page == "⚙️ Configuracion":
     st.title("⚙️ Configuracion")

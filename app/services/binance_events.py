@@ -1,75 +1,72 @@
 """
 Servicio para detectar eventos de Binance (Launchpool, Megadrop, nuevos listados)
-mediante web scraping controlado. Sin datos ficticios.
+mediante el feed RSS oficial (estable y sin bloqueo).
 """
 import requests
-from bs4 import BeautifulSoup
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 from app.models import BinanceEvent
 
 class BinanceEventScraper:
-    """Extrae eventos recientes de la página de anuncios de Binance."""
+    """Extrae eventos de Binance desde el feed RSS oficial."""
     
-    ANNOUNCEMENT_URL = "https://www.binance.com/en/support/announcement/c-48?c=48&navId=48"
+    RSS_URL = "https://www.binance.com/en/support/announcement/rss?c=48"
     
     @staticmethod
     def fetch_events() -> List[Dict[str, Any]]:
-        """
-        Realiza scraping de la página de anuncios y devuelve eventos reales.
-        Si no encuentra ninguno, devuelve lista vacía.
-        """
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         }
         events = []
-        
         try:
-            resp = requests.get(BinanceEventScraper.ANNOUNCEMENT_URL, headers=headers, timeout=15)
+            resp = requests.get(BinanceEventScraper.RSS_URL, headers=headers, timeout=15)
             if resp.status_code == 200:
-                soup = BeautifulSoup(resp.text, 'lxml')
-                # Buscar elementos que contengan anuncios. La estructura actual puede usar clases como:
-                # .css-1ej4pfo, .css-1h1rkxh, .announcement-item, etc.
-                # Buscamos enlaces que contengan títulos de anuncios
-                # Una estrategia más robusta: buscar todos los enlaces que estén dentro de <h2> o <div> con texto largo
-                for link in soup.find_all('a', href=True):
-                    # Buscar el texto del enlace (puede estar dentro de un <div> o <span>)
-                    title = link.get_text(strip=True)
-                    # Filtrar por longitud y palabras clave
-                    if len(title) > 20 and any(kw in title.lower() for kw in ['launchpool', 'megadrop', 'listing', 'list', 'launch', 'new']):
-                        url = link['href']
-                        if not url.startswith('http'):
-                            url = "https://www.binance.com" + url
-                        # Determinar tipo
+                # Parsear XML
+                root = ET.fromstring(resp.content)
+                # Namespace del feed RSS de Atom (usado por Binance)
+                ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                # Buscar todas las entradas <entry>
+                entries = root.findall('.//atom:entry', ns)
+                for entry in entries:
+                    title_elem = entry.find('atom:title', ns)
+                    link_elem = entry.find('atom:link', ns)
+                    date_elem = entry.find('atom:updated', ns)
+                    if title_elem is not None and link_elem is not None:
+                        title = title_elem.text
+                        link = link_elem.get('href')
+                        if not link.startswith('http'):
+                            link = "https://www.binance.com" + link
+                        event_date = None
+                        if date_elem is not None and date_elem.text:
+                            try:
+                                date_str = date_elem.text.replace('Z', '+00:00')
+                                event_date = datetime.fromisoformat(date_str)
+                            except:
+                                pass
+                        # Determinar tipo de evento por palabras clave
                         event_type = "announcement"
-                        if "launchpool" in title.lower():
+                        title_lower = title.lower()
+                        if "launchpool" in title_lower:
                             event_type = "launchpool"
-                        elif "megadrop" in title.lower():
+                        elif "megadrop" in title_lower:
                             event_type = "megadrop"
-                        elif "listing" in title.lower() or "list" in title.lower():
+                        elif "listing" in title_lower or "will list" in title_lower:
                             event_type = "new_listing"
                         events.append({
                             "title": title,
                             "description": "",
                             "event_type": event_type,
-                            "url": url,
-                            "event_date": None
+                            "url": link,
+                            "event_date": event_date
                         })
-                # Eliminar duplicados (por título)
-                unique = {}
-                for ev in events:
-                    if ev["title"] not in unique:
-                        unique[ev["title"]] = ev
-                events = list(unique.values())
-                # Limitar a los 15 más recientes (aproximadamente)
-                events = events[:15]
+                # Limitar a los 20 más recientes (el feed ya viene ordenado)
+                events = events[:20]
             else:
-                print(f"Error HTTP {resp.status_code} al acceder a Binance")
+                print(f"Error HTTP {resp.status_code} al acceder al feed RSS de Binance.")
         except Exception as e:
-            print(f"Error scraping eventos reales: {e}")
-        
-        # No se añaden eventos ficticios
+            print(f"Error al procesar el feed RSS: {e}")
         return events
 
 class BinanceEventService:
@@ -77,7 +74,7 @@ class BinanceEventService:
         self.db = db
     
     def update_events(self) -> int:
-        """Actualiza la base de datos con eventos reales. Retorna número de nuevos eventos guardados."""
+        """Actualiza la base de datos con eventos reales del feed RSS."""
         new_events = BinanceEventScraper.fetch_events()
         saved_count = 0
         for ev in new_events:

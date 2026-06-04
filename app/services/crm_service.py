@@ -429,7 +429,6 @@ class CRMService:
     # ═══════════════════════════════════════
     # OPORTUNIDADES
     # ═══════════════════════════════════════
-
     def crear_oportunidad(self, symbol: str, tipo: str,
                           entrada: float, objetivo: float, stop: float,
                           monto_planificado: float = 0,
@@ -444,7 +443,7 @@ class CRMService:
 
         tipo_enum = None
         for enum_member in TipoOportunidad:
-            if enum_member.value == tipo:
+            if enum_member.value == tipo or enum_member.name == tipo.upper():
                 tipo_enum = enum_member
                 break
         if not tipo_enum:
@@ -503,7 +502,6 @@ class CRMService:
     # ═══════════════════════════════════════
     # TAREAS
     # ═══════════════════════════════════════
-
     def crear_tarea(self, symbol: str, tipo: str, descripcion: str,
                     dias: int = 1, prioridad: int = 2) -> Tarea:
         cliente = self.obtener_cliente(symbol)
@@ -532,7 +530,6 @@ class CRMService:
         return tarea
 
     def tareas_pendientes(self, urgentes: bool = False) -> List[Tarea]:
-        """Devuelve todas las tareas no completadas, ordenadas por fecha límite (las más próximas primero)."""
         query = self.db.query(Tarea).filter(Tarea.completada == False)
         if urgentes:
             query = query.filter(Tarea.prioridad == 1)
@@ -545,10 +542,15 @@ class CRMService:
             Tarea.fecha_limite <= limite
         ).order_by(Tarea.fecha_limite).all()
 
+    def tareas_completadas(self, limit: int = 10) -> List[Tarea]:
+        """Devuelve las últimas tareas completadas, ordenadas por fecha de finalización."""
+        return self.db.query(Tarea).filter(
+            Tarea.completada == True
+        ).order_by(Tarea.fecha_completada.desc()).limit(limit).all()
+
     # ═══════════════════════════════════════
     # ANALYTICS & REPORTES
     # ═══════════════════════════════════════
-
     def resumen_portafolio(self) -> dict:
         clientes = self.db.query(ClienteCripto).all()
         interacciones = self.db.query(Interaccion).count()

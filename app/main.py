@@ -1,12 +1,16 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+import atexit
 
 from app.models import init_db, SessionLocal
 from app.api import clientes, interacciones, oportunidades, tareas, lotes
 from app.services.exchange_sync import ExchangeConnector
 from app.services.analytics import AnalyticsService
 from app.services.binance_events import BinanceEventService
+from app.services.notification_service import NotificationService
 
 app = FastAPI(
     title="Crypto CRM",
@@ -37,6 +41,31 @@ def get_db():
     finally:
         db.close()
 
+# ========== SCHEDULER PARA NOTIFICACIONES AUTOMÁTICAS ==========
+def generar_notificaciones_automaticas():
+    """Función que ejecuta el servicio de notificaciones cada X minutos."""
+    db = SessionLocal()
+    try:
+        service = NotificationService(db)
+        results = service.generate_all_alerts()
+        print(f"[SCHEDULER] Notificaciones generadas: {results}")
+    except Exception as e:
+        print(f"[SCHEDULER] Error generando notificaciones: {e}")
+    finally:
+        db.close()
+
+# Configurar scheduler: ejecutar cada 5 minutos (300 segundos)
+scheduler = BackgroundScheduler()
+scheduler.add_job(
+    func=generar_notificaciones_automaticas,
+    trigger=IntervalTrigger(minutes=5),
+    id='notificaciones_auto',
+    replace_existing=True
+)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
+# =========================================
+
 @app.get("/")
 def root():
     return {
@@ -53,8 +82,8 @@ def root():
             "daily-pnl": "/analytics/daily-pnl",
             "performance-by-category": "/analytics/performance-by-category",
             "binance-events": "/binance-events",
-            "binance-events-update": "/binance-events/update (POST)",
-            "historical-ohlcv": "/historical-ohlcv/{symbol}"
+            "notifications": "/notifications",
+            "notifications/read": "/notifications/read (POST)"
         }
     }
 
@@ -79,11 +108,8 @@ def obtener_velas(symbol: str, timeframe: str = "1h", limit: int = 100, vs: str 
 @app.get("/dashboard/resumen")
 def resumen_dashboard(db: Session = Depends(get_db)):
     from app.services.crm_service import CRMService
-    from app.services.analytics import AnalyticsService
-
     crm = CRMService(db)
     analytics = AnalyticsService(db)
-
     return {
         "resumen": crm.resumen_portafolio(),
         "top_performers": [
@@ -103,12 +129,6 @@ def get_daily_pnl(days: int = 7, db: Session = Depends(get_db)):
 def get_performance_by_category(db: Session = Depends(get_db)):
     analytics = AnalyticsService(db)
     return analytics.rendimiento_por_categoria()
-
-@app.get("/analytics/historial-transacciones")
-def get_historial_transacciones(db: Session = Depends(get_db)):
-    """Retorna todas las interacciones (compras/ventas) con detalles."""
-    analytics = AnalyticsService(db)
-    return analytics.historial_transacciones()
 
 @app.get("/binance-events")
 def get_binance_events(limit: int = 20, db: Session = Depends(get_db)):
@@ -132,19 +152,46 @@ def update_binance_events(db: Session = Depends(get_db)):
     service = BinanceEventService(db)
     saved = service.update_events()
     if saved == 0:
-        return {"message": "No se encontraron nuevos eventos. Es posible que Binance haya cambiado su estructura o no haya novedades."}
+        return {"message": "No se encontraron nuevos eventos."}
     return {"message": f"Actualización completada. {saved} nuevos eventos guardados."}
 
-@app.get("/historical-ohlcv/{symbol}")
-def get_historical_ohlcv(symbol: str, days: int = 7, timeframe: str = "1h"):
-    """Retorna velas históricas de Binance para análisis."""
-    connector = ExchangeConnector()
-    # Calcular límite de velas: 24 horas * días
-    limit = 24 * days if timeframe == "1h" else 24 * days * 4  # si fuera 15m, etc. Por simplicidad, usamos 1h
-    velas = connector.obtener_velas(symbol.upper(), timeframe, limit)
-    return {
-        "symbol": symbol.upper(),
-        "timeframe": timeframe,
-        "days": days,
-        "data": velas
-    }
+# ========== NOTIFICACIONES ==========
+@app.get("/notifications")
+def get_notifications(limit: int = 20, unread_only: bool = False, db: Session = Depends(get_db)):
+    service = NotificationService(db)
+    if unread_only:
+        notifs = service.get_unread_notifications(limit)
+    else:
+        notifs = service.get_recent_notifications(limit)
+    return [
+        {
+            "id": n.id,
+            "message": n.message,
+            "type": n.type,
+            "related_id": n.related_id,
+            "is_read": n.is_read,
+            "created_at": n.created_at.isoformat()
+        }
+        for n in notifs
+    ]
+
+@app.post("/notifications/read/{notif_id}")
+def mark_notification_read(notif_id: int, db: Session = Depends(get_db)):
+    service = NotificationService(db)
+    if service.mark_as_read(notif_id):
+        return {"message": "Notificación marcada como leída"}
+    else:
+        raise HTTPException(status_code=404, detail="Notificación no encontrada")
+
+@app.post("/notifications/read-all")
+def mark_all_notifications_read(db: Session = Depends(get_db)):
+    service = NotificationService(db)
+    service.mark_all_as_read()
+    return {"message": "Todas las notificaciones marcadas como leídas"}
+
+@app.post("/notifications/generate")
+def trigger_notifications(db: Session = Depends(get_db)):
+    """Endpoint opcional para forzar generación manual de notificaciones."""
+    service = NotificationService(db)
+    results = service.generate_all_alerts()
+    return results

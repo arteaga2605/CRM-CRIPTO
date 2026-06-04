@@ -9,6 +9,7 @@ from app.services.crm_service import CRMService
 from app.services.analytics import AnalyticsService
 from app.services.exchange_sync import ExchangeConnector
 from app.services.binance_events import BinanceEventService
+from app.services.notification_service import NotificationService
 from datetime import datetime, timedelta
 
 app = Celery('crypto_crm', broker='redis://localhost:6379/0')
@@ -17,14 +18,11 @@ SessionLocal = sessionmaker(bind=engine)
 
 @app.task
 def verificar_alertas_programadas():
-    """Revisa cada hora si algun cliente necesita atencion"""
     db = SessionLocal()
     try:
         crm = CRMService(db)
         analytics = AnalyticsService(db)
-
         alertas = analytics.alertas_inteligentes()
-
         for alerta in alertas:
             if alerta["nivel"] in ["CRITICO", "ADVERTENCIA"]:
                 existente = db.query(Tarea).filter(
@@ -32,7 +30,6 @@ def verificar_alertas_programadas():
                     Tarea.tipo_tarea == alerta["accion_sugerida"],
                     Tarea.completada == False
                 ).first()
-
                 if not existente:
                     crm.crear_tarea(
                         symbol=alerta["symbol"],
@@ -41,44 +38,33 @@ def verificar_alertas_programadas():
                         dias=0 if alerta["nivel"] == "CRITICO" else 1,
                         prioridad=1 if alerta["nivel"] == "CRITICO" else 2
                     )
-
         return f"Alertas verificadas: {len(alertas)} generadas"
     finally:
         db.close()
 
 @app.task
 def sincronizar_precios():
-    """
-    Actualiza precios de mercado para todos los clientes con cantidad > 0
-    usando la API pública de Binance.
-    """
     db = SessionLocal()
     try:
         crm = CRMService(db)
         connector = ExchangeConnector()
         clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
-
         actualizados = 0
         for cliente in clientes:
             precio = connector.obtener_precio(cliente.symbol)
             if precio > 0:
                 crm.actualizar_precio_mercado(cliente.symbol, precio)
                 actualizados += 1
-            else:
-                print(f"No se pudo obtener precio para {cliente.symbol}")
-
         return f"Precios actualizados para {actualizados} de {len(clientes)} clientes"
     finally:
         db.close()
 
 @app.task
 def reporte_diario():
-    """Genera reporte diario del portafolio"""
     db = SessionLocal()
     try:
         crm = CRMService(db)
         resumen = crm.resumen_portafolio()
-
         reporte = f"""
 📊 REPORTE DIARIO CRM CRYPTO
 ━━━━━━━━━━━━━━━━━━━━━━
@@ -96,7 +82,6 @@ Oportunidades abiertas: {resumen['oportunidades_abiertas']}
 
 @app.task
 def fetch_binance_events():
-    """Tarea programada para buscar eventos nuevos de Binance (cada 6 horas)."""
     db = SessionLocal()
     try:
         service = BinanceEventService(db)
@@ -104,5 +89,17 @@ def fetch_binance_events():
         return f"Se encontraron {saved} nuevos eventos de Binance."
     except Exception as e:
         return f"Error actualizando eventos de Binance: {e}"
+    finally:
+        db.close()
+
+@app.task
+def generate_notifications():
+    db = SessionLocal()
+    try:
+        notif_service = NotificationService(db)
+        results = notif_service.generate_all_alerts()
+        return f"Notificaciones generadas: {results}"
+    except Exception as e:
+        return f"Error generando notificaciones: {e}"
     finally:
         db.close()

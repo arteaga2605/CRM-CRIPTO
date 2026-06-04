@@ -1,9 +1,3 @@
-
----
-
-## 📄 2. `requirements.txt` (completo)
-
-```text
 # Framework
 fastapi==0.111.0
 uvicorn[standard]==0.30.0
@@ -24,7 +18,7 @@ pandas==2.2.2
 # Exchange API
 ccxt==4.3.0
 
-# Background Tasks
+# Background Tasks (reemplazado por apscheduler, ya no se usa celery)
 celery==5.4.0
 redis==5.0.0
 
@@ -44,3 +38,6 @@ lxml==5.2.2
 
 # Correlación y análisis
 scipy==1.13.0
+
+# Scheduler para notificaciones automáticas (sin Celery)
+apscheduler==3.10.4

@@ -5,12 +5,13 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import atexit
 
-from app.models import init_db, SessionLocal
+from app.models import init_db, SessionLocal, ClienteCripto
 from app.api import clientes, interacciones, oportunidades, tareas, lotes
 from app.services.exchange_sync import ExchangeConnector
 from app.services.analytics import AnalyticsService
 from app.services.binance_events import BinanceEventService
 from app.services.notification_service import NotificationService
+from app.services.crm_service import CRMService
 
 app = FastAPI(
     title="Crypto CRM",
@@ -41,9 +42,42 @@ def get_db():
     finally:
         db.close()
 
-# ========== SCHEDULER PARA NOTIFICACIONES AUTOMÁTICAS ==========
+# ========== TAREAS PROGRAMADAS (APScheduler) ==========
+def actualizar_precios_automatico():
+    """
+    Actualiza el precio de mercado de todos los clientes con cantidad > 0.
+    Se ejecuta automáticamente cada hora.
+    """
+    db = SessionLocal()
+    try:
+        crm = CRMService(db)
+        connector = ExchangeConnector()
+        clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
+        actualizados = 0
+        for cliente in clientes:
+            precio = connector.obtener_precio(cliente.symbol)
+            if precio > 0:
+                crm.actualizar_precio_mercado(cliente.symbol, precio)
+                actualizados += 1
+        print(f"[SCHEDULER] Precios actualizados automáticamente: {actualizados} de {len(clientes)} clientes.")
+    except Exception as e:
+        print(f"[SCHEDULER] Error actualizando precios: {e}")
+    finally:
+        db.close()
+
+# Programar la actualización automática cada hora (3600 segundos)
+scheduler = BackgroundScheduler()
+scheduler.add_job(
+    func=actualizar_precios_automatico,
+    trigger=IntervalTrigger(hours=1),
+    id='actualizar_precios_hora',
+    replace_existing=True
+)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
+
+# También programar notificaciones cada 5 minutos (si no lo tenías)
 def generar_notificaciones_automaticas():
-    """Función que ejecuta el servicio de notificaciones cada X minutos."""
     db = SessionLocal()
     try:
         service = NotificationService(db)
@@ -54,18 +88,14 @@ def generar_notificaciones_automaticas():
     finally:
         db.close()
 
-# Configurar scheduler: ejecutar cada 5 minutos (300 segundos)
-scheduler = BackgroundScheduler()
 scheduler.add_job(
     func=generar_notificaciones_automaticas,
     trigger=IntervalTrigger(minutes=5),
     id='notificaciones_auto',
     replace_existing=True
 )
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
-# =========================================
 
+# ========== ENDPOINTS ==========
 @app.get("/")
 def root():
     return {
@@ -191,7 +221,6 @@ def mark_all_notifications_read(db: Session = Depends(get_db)):
 
 @app.post("/notifications/generate")
 def trigger_notifications(db: Session = Depends(get_db)):
-    """Endpoint opcional para forzar generación manual de notificaciones."""
     service = NotificationService(db)
     results = service.generate_all_alerts()
     return results

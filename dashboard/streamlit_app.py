@@ -1189,66 +1189,36 @@ elif page == "🔥 Tendencias de Mercado":
             st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
 
 # ═══════════════════════════════════════
-# PÁGINA: EVENTOS BINANCE
+# PÁGINA: EVENTOS BINANCE (solo enlace manual)
 # ═══════════════════════════════════════
 elif page == "📢 Eventos Binance":
     st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
-    st.markdown("Eventos recientes extraídos de la página oficial de anuncios de Binance.")
+    st.markdown("""
+    **⚠️ Actualización automática desactivada**  
+    Debido a restricciones técnicas (bloqueo de scraping por parte de Binance), esta sección ya no intenta obtener eventos de forma automática.
     
-    col1, col2 = st.columns([3,1])
-    with col1:
-        st.info("🔍 Los eventos se obtienen mediante web scraping de la página de anuncios de Binance.")
-    with col2:
-        if st.button("🔄 Forzar actualización ahora", type="primary"):
-            with st.spinner("Actualizando eventos desde Binance..."):
-                try:
-                    r = requests.post(f"{API_URL}/binance-events/update", timeout=30)
-                    if r.status_code == 200:
-                        data = r.json()
-                        st.success(data.get("message", "Actualización completada."))
-                        st.rerun()
-                    else:
-                        st.error(f"Error {r.status_code}: {r.text[:200]}")
-                except Exception as e:
-                    st.error(f"Error de conexión: {e}")
+    Para estar al día de los últimos lanzamientos (Launchpool, Megadrop, nuevos listados), visita directamente la página oficial de anuncios:
+    """)
+    st.markdown(
+        "[🔗 Abrir página de anuncios de Binance](https://www.binance.com/en/support/announcement/c-48?c=48&navId=48)",
+        unsafe_allow_html=True
+    )
+    st.info("Puedes revisar manualmente los anuncios y luego registrar tus oportunidades o tareas en el CRM.")
     
-    eventos = fetch("/binance-events?limit=30")
-    if eventos is None:
-        st.error("No se pudo conectar a la API. Asegúrate de que FastAPI esté corriendo en el puerto 8000.")
-    elif isinstance(eventos, list):
-        if len(eventos) > 0:
+    # Mostrar eventos antiguos si existen (por si quedaron en la BD)
+    eventos = fetch("/binance-events?limit=10")
+    if eventos and isinstance(eventos, list) and len(eventos) > 0:
+        with st.expander("📦 Eventos anteriores (guardados en la base de datos)"):
             df_events = pd.DataFrame(eventos)
             if "detected_at" in df_events.columns:
                 df_events["detected_at"] = pd.to_datetime(df_events["detected_at"]).dt.strftime("%Y-%m-%d %H:%M")
-            if "event_date" in df_events.columns:
-                df_events["event_date"] = pd.to_datetime(df_events["event_date"]).dt.strftime("%Y-%m-%d") if df_events["event_date"].notna().any() else None
-            
-            st.subheader("📋 Últimos eventos detectados")
-            display_cols = ["title", "event_type", "detected_at", "url"]
-            st.dataframe(df_events[display_cols], width='stretch')
-            
-            st.subheader("🔍 Detalle de eventos")
-            for idx, row in df_events.iterrows():
-                with st.expander(f"📌 {row['title'][:100]}"):
-                    st.markdown(f"**Tipo:** {row['event_type']}")
-                    st.markdown(f"**Detectado:** {row['detected_at']}")
-                    if row.get('event_date') and row['event_date'] != "None":
-                        st.markdown(f"**Fecha del evento:** {row['event_date']}")
-                    if row.get('url') and row['url'] != "None":
-                        st.markdown(f"**Enlace:** [Ver anuncio]({row['url']})")
-                    if row.get('description'):
-                        st.markdown(f"**Descripción:** {row['description']}")
-        else:
-            st.warning("No se encontraron eventos reales en este momento. Es posible que Binance haya cambiado la estructura de su página o que no haya novedades recientes. Intenta más tarde.")
-    else:
-        st.error("La respuesta de la API no tiene el formato esperado.")
+            st.dataframe(df_events[["title", "event_type", "detected_at", "url"]], width='stretch')
     
-    with st.expander("ℹ️ ¿Cómo funciona?"):
+    with st.expander("ℹ️ ¿Por qué ya no se actualizan automáticamente?"):
         st.markdown("""
-        - El sistema extrae anuncios de la página oficial de Binance.
-        - Si no se detectan eventos reales (por cambios en la web o bloqueo), se mostrará un mensaje informativo.
-        - Puedes forzar la actualización manual en cualquier momento.
-        - **No se utilizan datos ficticios.** Solo eventos auténticos.
+        - Binance ha bloqueado el acceso automatizado a su feed RSS y a las páginas de anuncios (códigos 202/404/403).
+        - Para evitar errores y mantener la estabilidad de la aplicación, se ha optado por redirigir al usuario a la fuente oficial.
+        - Si en el futuro Binance ofrece una API pública para eventos, se podrá reactivar la automatización.
         """)
 
 # ═══════════════════════════════════════

@@ -7,6 +7,7 @@ import requests
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from noticias import mostrar_pagina_noticias
 from datetime import datetime, timedelta
 from streamlit_autorefresh import st_autorefresh
 import time
@@ -392,6 +393,7 @@ page = st.sidebar.radio("Navegación", [
     "🔥 Tendencias de Mercado",
     "📢 Eventos Binance",
     "📈 Análisis y Trading",
+    "📰 Noticias",
     "⚙️ Configuracion"
 ], label_visibility="hidden")
 
@@ -1355,7 +1357,11 @@ elif page == "📈 Análisis y Trading":
                     st.info("No hay transacciones de compra/venta registradas todavía.")
             else:
                 st.info("No hay clientes registrados aún.")
-
+                
+                
+elif page == "📰 Noticias":
+    mostrar_pagina_noticias()
+    
 # ═══════════════════════════════════════
 # PÁGINA: CONFIGURACION
 # ═══════════════════════════════════════

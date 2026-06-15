@@ -111,6 +111,7 @@ def root():
             "ticker": "/ticker/{symbol}",
             "daily-pnl": "/analytics/daily-pnl",
             "performance-by-category": "/analytics/performance-by-category",
+            "realized-pnl-summary": "/analytics/realized-pnl-summary",
             "binance-events": "/binance-events",
             "notifications": "/notifications",
             "notifications/read": "/notifications/read (POST)"
@@ -159,6 +160,11 @@ def get_daily_pnl(days: int = 7, db: Session = Depends(get_db)):
 def get_performance_by_category(db: Session = Depends(get_db)):
     analytics = AnalyticsService(db)
     return analytics.rendimiento_por_categoria()
+
+@app.get("/analytics/realized-pnl-summary")
+def get_realized_pnl_summary(db: Session = Depends(get_db)):
+    analytics = AnalyticsService(db)
+    return analytics.ganancias_perdidas_realizadas()
 
 @app.get("/binance-events")
 def get_binance_events(limit: int = 20, db: Session = Depends(get_db)):

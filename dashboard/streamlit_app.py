@@ -403,6 +403,7 @@ page = st.sidebar.radio("Navegación", [
 if page == "🏠 Dashboard":
     st.title("📊 Dashboard Principal")
     
+    # Botón manual de actualización de precios (adicional)
     if st.button("🔄 Actualizar precios ahora (Binance)"):
         with st.spinner("Actualizando precios de todos los clientes..."):
             clientes = fetch("/clientes/")
@@ -421,6 +422,7 @@ if page == "🏠 Dashboard":
         distribucion = data.get("distribucion", [])
         top = data.get("top_performers", [])
 
+        # KPIs
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Clientes Activos", resumen.get("clientes_activos", 0))
         col2.metric("VIP", resumen.get("clientes_vip", 0))
@@ -429,6 +431,20 @@ if page == "🏠 Dashboard":
         col5.metric("ROI", f"{resumen.get('roi_porcentaje', 0):.1f}%")
 
         st.divider()
+        
+        # ========== NUEVA SECCIÓN: GANANCIAS Y PÉRDIDAS REALIZADAS ==========
+        st.subheader("📊 Ganancias y Pérdidas Realizadas")
+        pnl_summary = fetch("/analytics/realized-pnl-summary")
+        if pnl_summary:
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("💰 Ganancias Realizadas", f"${pnl_summary.get('ganancias_realizadas', 0):,.2f}")
+            col_b.metric("💸 Pérdidas Realizadas", f"${pnl_summary.get('perdidas_realizadas', 0):,.2f}", delta_color="inverse")
+            col_c.metric("📈 Neto Realizado", f"${pnl_summary.get('neto_realizado', 0):,.2f}",
+                         delta=f"${pnl_summary.get('neto_realizado', 0):,.2f}" if pnl_summary.get('neto_realizado') >= 0 else f"-${abs(pnl_summary.get('neto_realizado', 0)):,.2f}",
+                         delta_color="normal")
+        else:
+            st.info("No hay datos de ganancias/pérdidas realizadas todavía.")
+        # ================================================================
         
         st.subheader("📈 Evolución de PnL Realizado (Últimos 7 días)")
         daily_pnl_data = fetch("/analytics/daily-pnl?days=7")

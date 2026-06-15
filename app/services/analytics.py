@@ -151,7 +151,11 @@ class AnalyticsService:
         return alertas
 
     def daily_pnl(self, days: int = 7) -> List[Dict]:
+        """
+        Retorna el PnL realizado por día (solo ventas) para los últimos 'days' días.
+        """
         start_date = datetime.utcnow() - timedelta(days=days)
+        # Agrupar por día (fecha sin hora)
         results = self.db.query(
             func.date(Interaccion.timestamp).label('date'),
             func.sum(Interaccion.pnl_realizado).label('total_pnl')
@@ -160,10 +164,12 @@ class AnalyticsService:
             Interaccion.timestamp >= start_date
         ).group_by(func.date(Interaccion.timestamp)).order_by(func.date(Interaccion.timestamp)).all()
         
+        # Llenar los días que no tienen datos con 0
         daily_data = {}
         for r in results:
             daily_data[r.date] = float(r.total_pnl)
         
+        # Crear lista de los últimos 'days' días (incluyendo hoy)
         today = datetime.utcnow().date()
         pnl_list = []
         for i in range(days - 1, -1, -1):
@@ -176,24 +182,25 @@ class AnalyticsService:
             })
         return pnl_list
 
-    def historial_transacciones(self) -> List[Dict]:
-        """Devuelve todas las compras y ventas con detalles: moneda, tipo, cantidad, precio, monto, fecha."""
-        interacciones = self.db.query(Interaccion).filter(
-            Interaccion.tipo.in_([TipoInteraccion.COMPRA, TipoInteraccion.VENTA])
-        ).order_by(Interaccion.timestamp.desc()).all()
+    def ganancias_perdidas_realizadas(self) -> dict:
+        """
+        Calcula el total de ganancias realizadas (PnL > 0) y pérdidas realizadas (PnL < 0)
+        a partir de todas las interacciones de tipo VENTA.
+        """
+        # Suma de PnL positivo (ganancias)
+        ganancias = self.db.query(func.sum(Interaccion.pnl_realizado)).filter(
+            Interaccion.tipo == TipoInteraccion.VENTA,
+            Interaccion.pnl_realizado > 0
+        ).scalar() or 0.0
         
-        resultado = []
-        for inter in interacciones:
-            cliente = inter.cliente
-            monto = float(inter.cantidad) * float(inter.precio_unitario)
-            resultado.append({
-                "moneda": cliente.symbol,
-                "tipo": inter.tipo.value,
-                "cantidad": float(inter.cantidad),
-                "precio_unitario": float(inter.precio_unitario),
-                "monto_usd": monto,
-                "fee": float(inter.fee),
-                "fecha": inter.timestamp.isoformat(),
-                "pnl_realizado": float(inter.pnl_realizado) if inter.pnl_realizado else 0
-            })
-        return resultado
+        # Suma de PnL negativo (pérdidas) – usamos abs para mostrar el valor positivo
+        perdidas = self.db.query(func.sum(Interaccion.pnl_realizado)).filter(
+            Interaccion.tipo == TipoInteraccion.VENTA,
+            Interaccion.pnl_realizado < 0
+        ).scalar() or 0.0
+        
+        return {
+            "ganancias_realizadas": float(ganancias),
+            "perdidas_realizadas": abs(float(perdidas)),  # valor absoluto para mostrar positivo
+            "neto_realizado": float(ganancias) - abs(float(perdidas))
+        }

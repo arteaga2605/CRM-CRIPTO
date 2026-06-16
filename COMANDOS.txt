@@ -17,3 +17,6 @@ En la segunda terminal tambn activar entorno virtual
 
 # 5. En otra terminal, inicia el dashboard
 streamlit run dashboard/streamlit_app.py
+
+BD 
+crypto_crm.db

@@ -470,9 +470,12 @@ if page == "🏠 Dashboard":
                     sell_price = p2p_data.get("sell_price", 0)
                     spread = p2p_data.get("spread_pct", 0)
 
-                    col1p, col2p, col3p = st.columns(3)
-                    with col1p:
-                        if buy_price > 0:
+                    # Verificar si hay datos válidos (ambos precios > 0)
+                    tiene_datos = buy_price > 0 and sell_price > 0
+
+                    if tiene_datos:
+                        col1p, col2p, col3p = st.columns(3)
+                        with col1p:
                             st.markdown(f"""
                             <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; border-left: 4px solid #00ff88;">
                                 <h4 style="color: #00ff88; margin:0;">⬆ COMPRAR</h4>
@@ -480,18 +483,15 @@ if page == "🏠 Dashboard":
                                 <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
                             </div>
                             """, unsafe_allow_html=True)
-                        else:
-                            st.info("Sin datos")
-                    with col2p:
-                        st.markdown(f"""
-                        <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; text-align: center;">
-                            <h4 style="color: #ffd700; margin:0;">Spread</h4>
-                            <p style="font-size: 1.5rem; color: white; margin:0;">{spread:.2f}%</p>
-                            <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    with col3p:
-                        if sell_price > 0:
+                        with col2p:
+                            st.markdown(f"""
+                            <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; text-align: center;">
+                                <h4 style="color: #ffd700; margin:0;">Spread</h4>
+                                <p style="font-size: 1.5rem; color: white; margin:0;">{spread:.2f}%</p>
+                                <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with col3p:
                             st.markdown(f"""
                             <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; border-left: 4px solid #ff4444;">
                                 <h4 style="color: #ff4444; margin:0;">⬇ VENDER</h4>
@@ -499,18 +499,14 @@ if page == "🏠 Dashboard":
                                 <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
                             </div>
                             """, unsafe_allow_html=True)
-                        else:
-                            st.info("Sin datos")
 
-                    # ========== RECOMENDACIÓN ==========
-                    st.divider()
-                    st.subheader("💡 Recomendación P2P")
-                    
-                    if buy_price > 0 and sell_price > 0:
+                        # ========== RECOMENDACIÓN ==========
+                        st.divider()
+                        st.subheader("💡 Recomendación P2P")
+                        
                         ganancia_por_unidad = sell_price - buy_price
                         ganancia_pct = (ganancia_por_unidad / buy_price) * 100 if buy_price > 0 else 0
                         
-                        # Determinar dirección recomendada
                         if ganancia_pct > 1.0:
                             recomendacion = "COMPRAR"
                             color = "#00ff88"
@@ -527,7 +523,6 @@ if page == "🏠 Dashboard":
                             mensaje = f"⚠️ **Spread bajo ({ganancia_pct:.2f}%). No hay oportunidad clara.**"
                             detalle = "Espera a que el spread supere el 1% para obtener una ganancia significativa."
                         
-                        # Mostrar recomendación en un cuadro estilizado
                         st.markdown(f"""
                         <div style="background-color: #1e2a3a; padding: 20px; border-radius: 10px; border-left: 4px solid {color};">
                             <h4 style="color: {color}; margin:0;">{mensaje}</h4>
@@ -535,16 +530,17 @@ if page == "🏠 Dashboard":
                         </div>
                         """, unsafe_allow_html=True)
                         
-                        # Mostrar resumen en métricas
                         col_r1, col_r2, col_r3 = st.columns(3)
                         col_r1.metric("Precio Compra", f"${buy_price:.2f}")
                         col_r2.metric("Precio Venta", f"${sell_price:.2f}")
                         col_r3.metric("Ganancia por unidad", f"${ganancia_por_unidad:.2f}", 
                                       delta=f"{ganancia_pct:.2f}%" if abs(ganancia_pct) > 0 else None,
                                       delta_color="normal" if ganancia_pct > 0 else "inverse")
+                        # ========== FIN RECOMENDACIÓN ==========
                     else:
-                        st.warning("No hay suficientes datos para generar una recomendación.")
-                    # ========== FIN RECOMENDACIÓN ==========
+                        # No hay datos para esta moneda/fiat
+                        st.warning(f"⚠️ No hay anuncios activos para **{asset_sel}/{fiat_sel}** en este momento.")
+                        st.info("Prueba con otra moneda o fiat, o actualiza más tarde.")
                 else:
                     st.warning("No se obtuvieron datos P2P.")
             else:

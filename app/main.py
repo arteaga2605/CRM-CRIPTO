@@ -12,6 +12,7 @@ from app.services.analytics import AnalyticsService
 from app.services.binance_events import BinanceEventService
 from app.services.notification_service import NotificationService
 from app.services.crm_service import CRMService
+from app.services.p2p_service import P2PService
 
 app = FastAPI(
     title="Crypto CRM",
@@ -65,18 +66,6 @@ def actualizar_precios_automatico():
     finally:
         db.close()
 
-# Programar la actualización automática cada hora (3600 segundos)
-scheduler = BackgroundScheduler()
-scheduler.add_job(
-    func=actualizar_precios_automatico,
-    trigger=IntervalTrigger(hours=1),
-    id='actualizar_precios_hora',
-    replace_existing=True
-)
-scheduler.start()
-atexit.register(lambda: scheduler.shutdown())
-
-# También programar notificaciones cada 5 minutos (si no lo tenías)
 def generar_notificaciones_automaticas():
     db = SessionLocal()
     try:
@@ -88,12 +77,38 @@ def generar_notificaciones_automaticas():
     finally:
         db.close()
 
+def actualizar_precios_p2p():
+    """Tarea programada para guardar oportunidades P2P (por ahora solo log)."""
+    try:
+        for asset in ["USDT", "BTC"]:
+            for fiat in ["ARS", "MXN"]:
+                datos = P2PService.get_best_prices(asset, fiat)
+                print(f"[P2P] {asset}/{fiat}: spread {datos['spread_pct']}%")
+    except Exception as e:
+        print(f"[P2P] Error: {e}")
+
+# Configurar scheduler
+scheduler = BackgroundScheduler()
+scheduler.add_job(
+    func=actualizar_precios_automatico,
+    trigger=IntervalTrigger(hours=1),
+    id='actualizar_precios_hora',
+    replace_existing=True
+)
 scheduler.add_job(
     func=generar_notificaciones_automaticas,
     trigger=IntervalTrigger(minutes=5),
     id='notificaciones_auto',
     replace_existing=True
 )
+scheduler.add_job(
+    func=actualizar_precios_p2p,
+    trigger=IntervalTrigger(minutes=5),
+    id='actualizar_p2p',
+    replace_existing=True
+)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
 
 # ========== ENDPOINTS ==========
 @app.get("/")
@@ -114,7 +129,8 @@ def root():
             "realized-pnl-summary": "/analytics/realized-pnl-summary",
             "binance-events": "/binance-events",
             "notifications": "/notifications",
-            "notifications/read": "/notifications/read (POST)"
+            "notifications/read": "/notifications/read (POST)",
+            "p2p": "/p2p/best-prices"
         }
     }
 
@@ -165,6 +181,11 @@ def get_performance_by_category(db: Session = Depends(get_db)):
 def get_realized_pnl_summary(db: Session = Depends(get_db)):
     analytics = AnalyticsService(db)
     return analytics.ganancias_perdidas_realizadas()
+
+@app.get("/p2p/best-prices")
+def get_p2p_best_prices(asset: str = "USDT", fiat: str = "ARS"):
+    """Devuelve los mejores precios P2P para un par."""
+    return P2PService.get_best_prices(asset, fiat)
 
 @app.get("/binance-events")
 def get_binance_events(limit: int = 20, db: Session = Depends(get_db)):

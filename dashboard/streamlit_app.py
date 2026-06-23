@@ -9,6 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from noticias import mostrar_pagina_noticias
 from datetime import datetime, timedelta
+from p2p import mostrar_pagina_p2p
 from streamlit_autorefresh import st_autorefresh
 import time
 from scipy.stats import pearsonr
@@ -394,6 +395,7 @@ page = st.sidebar.radio("Navegación", [
     "📢 Eventos Binance",
     "📈 Análisis y Trading",
     "📰 Noticias",
+    "📊 P2P Binance",
     "⚙️ Configuracion"
 ], label_visibility="hidden")
 
@@ -403,7 +405,6 @@ page = st.sidebar.radio("Navegación", [
 if page == "🏠 Dashboard":
     st.title("📊 Dashboard Principal")
     
-    # Botón manual de actualización de precios (adicional)
     if st.button("🔄 Actualizar precios ahora (Binance)"):
         with st.spinner("Actualizando precios de todos los clientes..."):
             clientes = fetch("/clientes/")
@@ -422,7 +423,6 @@ if page == "🏠 Dashboard":
         distribucion = data.get("distribucion", [])
         top = data.get("top_performers", [])
 
-        # KPIs
         col1, col2, col3, col4, col5 = st.columns(5)
         col1.metric("Clientes Activos", resumen.get("clientes_activos", 0))
         col2.metric("VIP", resumen.get("clientes_vip", 0))
@@ -432,7 +432,130 @@ if page == "🏠 Dashboard":
 
         st.divider()
         
-        # ========== NUEVA SECCIÓN: GANANCIAS Y PÉRDIDAS REALIZADAS ==========
+        # ========== NUEVA SECCIÓN P2P CON TOP 20 CRIPTO ==========
+        # ========== NUEVA SECCIÓN P2P CON RECOMENDACIÓN ==========
+        st.subheader("📊 Oportunidad P2P en tiempo real")
+        
+        @st.cache_data(ttl=3600)
+        def obtener_top_20_criptos():
+            try:
+                url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=20&page=1&sparkline=false"
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    return [coin["symbol"].upper() for coin in data]
+                else:
+                    return ["BTC", "ETH", "USDT", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "MATIC", "SHIB", "TRX", "AVAX", "UNI", "ATOM", "LTC", "NEAR", "ALGO", "ICP"]
+            except:
+                return ["BTC", "ETH", "USDT", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "MATIC", "SHIB", "TRX", "AVAX", "UNI", "ATOM", "LTC", "NEAR", "ALGO", "ICP"]
+        
+        top_20 = obtener_top_20_criptos()
+        
+        col_a, col_b, col_c = st.columns([2, 1, 2])
+        with col_a:
+            fiat_sel = st.selectbox("Moneda fiat", ["ARS", "MXN", "COP", "PEN", "CLP", "BRL", "VES", "USD"], index=0, key="p2p_fiat_dash")
+        with col_b:
+            asset_sel = st.selectbox("Cripto", top_20, index=0, key="p2p_asset_dash")
+        with col_c:
+            if st.button("🔄 Actualizar oportunidad P2P", key="p2p_refresh_dash"):
+                st.cache_data.clear()
+                st.rerun()
+
+        try:
+            r = requests.get(f"{API_URL}/p2p/best-prices", params={"asset": asset_sel, "fiat": fiat_sel}, timeout=5)
+            if r.status_code == 200:
+                p2p_data = r.json()
+                if p2p_data:
+                    buy_price = p2p_data.get("buy_price", 0)
+                    sell_price = p2p_data.get("sell_price", 0)
+                    spread = p2p_data.get("spread_pct", 0)
+
+                    col1p, col2p, col3p = st.columns(3)
+                    with col1p:
+                        if buy_price > 0:
+                            st.markdown(f"""
+                            <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; border-left: 4px solid #00ff88;">
+                                <h4 style="color: #00ff88; margin:0;">⬆ COMPRAR</h4>
+                                <p style="font-size: 1.5rem; color: white; margin:0;">${buy_price:.2f}</p>
+                                <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.info("Sin datos")
+                    with col2p:
+                        st.markdown(f"""
+                        <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; text-align: center;">
+                            <h4 style="color: #ffd700; margin:0;">Spread</h4>
+                            <p style="font-size: 1.5rem; color: white; margin:0;">{spread:.2f}%</p>
+                            <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                    with col3p:
+                        if sell_price > 0:
+                            st.markdown(f"""
+                            <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; border-left: 4px solid #ff4444;">
+                                <h4 style="color: #ff4444; margin:0;">⬇ VENDER</h4>
+                                <p style="font-size: 1.5rem; color: white; margin:0;">${sell_price:.2f}</p>
+                                <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        else:
+                            st.info("Sin datos")
+
+                    # ========== RECOMENDACIÓN ==========
+                    st.divider()
+                    st.subheader("💡 Recomendación P2P")
+                    
+                    if buy_price > 0 and sell_price > 0:
+                        ganancia_por_unidad = sell_price - buy_price
+                        ganancia_pct = (ganancia_por_unidad / buy_price) * 100 if buy_price > 0 else 0
+                        
+                        # Determinar dirección recomendada
+                        if ganancia_pct > 1.0:
+                            recomendacion = "COMPRAR"
+                            color = "#00ff88"
+                            mensaje = f"✅ **Recomendado COMPRAR** a ${buy_price:.2f} y vender a ${sell_price:.2f} en spot/P2P."
+                            detalle = f"Ganancia potencial: ${ganancia_por_unidad:.2f} por unidad ({ganancia_pct:.2f}%)"
+                        elif ganancia_pct < -1.0:
+                            recomendacion = "VENDER"
+                            color = "#ff4444"
+                            mensaje = f"✅ **Recomendado VENDER** a ${sell_price:.2f} (actualmente está por encima del precio de compra)."
+                            detalle = f"Puedes vender ahora y recomprar cuando baje. Diferencia: ${abs(ganancia_por_unidad):.2f} por unidad ({abs(ganancia_pct):.2f}%)"
+                        else:
+                            recomendacion = "NEUTRO"
+                            color = "#ffd700"
+                            mensaje = f"⚠️ **Spread bajo ({ganancia_pct:.2f}%). No hay oportunidad clara.**"
+                            detalle = "Espera a que el spread supere el 1% para obtener una ganancia significativa."
+                        
+                        # Mostrar recomendación en un cuadro estilizado
+                        st.markdown(f"""
+                        <div style="background-color: #1e2a3a; padding: 20px; border-radius: 10px; border-left: 4px solid {color};">
+                            <h4 style="color: {color}; margin:0;">{mensaje}</h4>
+                            <p style="color: #b0c4de; margin:5px 0 0 0;">{detalle}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Mostrar resumen en métricas
+                        col_r1, col_r2, col_r3 = st.columns(3)
+                        col_r1.metric("Precio Compra", f"${buy_price:.2f}")
+                        col_r2.metric("Precio Venta", f"${sell_price:.2f}")
+                        col_r3.metric("Ganancia por unidad", f"${ganancia_por_unidad:.2f}", 
+                                      delta=f"{ganancia_pct:.2f}%" if abs(ganancia_pct) > 0 else None,
+                                      delta_color="normal" if ganancia_pct > 0 else "inverse")
+                    else:
+                        st.warning("No hay suficientes datos para generar una recomendación.")
+                    # ========== FIN RECOMENDACIÓN ==========
+                else:
+                    st.warning("No se obtuvieron datos P2P.")
+            else:
+                st.warning("No se pudo conectar con el servicio P2P.")
+        except Exception as e:
+            st.warning(f"Error al obtener datos P2P: {e}")
+
+        st.divider()
+        # ========== FIN SECCIÓN P2P ==========
+        # ========== FIN SECCIÓN P2P ==========
+        
         st.subheader("📊 Ganancias y Pérdidas Realizadas")
         pnl_summary = fetch("/analytics/realized-pnl-summary")
         if pnl_summary:
@@ -444,7 +567,6 @@ if page == "🏠 Dashboard":
                          delta_color="normal")
         else:
             st.info("No hay datos de ganancias/pérdidas realizadas todavía.")
-        # ================================================================
         
         st.subheader("📈 Evolución de PnL Realizado (Últimos 7 días)")
         daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
@@ -490,7 +612,6 @@ if page == "🏠 Dashboard":
                     st.caption(f"Accion sugerida: {alerta['accion_sugerida']}")
         else:
             st.success("No hay alertas activas. Todo en orden! 🎉")
-
 # ═══════════════════════════════════════
 # PÁGINA: CLIENTES
 # ═══════════════════════════════════════
@@ -1377,6 +1498,9 @@ elif page == "📈 Análisis y Trading":
                 
 elif page == "📰 Noticias":
     mostrar_pagina_noticias()
+    
+elif page == "📊 P2P Binance":
+    mostrar_pagina_p2p()    
     
 # ═══════════════════════════════════════
 # PÁGINA: CONFIGURACION

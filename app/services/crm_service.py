@@ -82,7 +82,17 @@ class CRMService:
         if not cliente:
             raise ValueError(f"Cliente {symbol} no encontrado")
 
-        precio_dec = Decimal(str(precio))
+        # CONTROL DE SEGURIDAD: Evita que Decimal(str(None)) rompa el backend con Error 500
+        if precio is None or str(precio).strip().lower() in ["none", "null", ""]:
+            print(f"[WARN] Precio no disponible o invalido para {symbol}. Se omite actualizacion de mercado.")
+            return cliente
+
+        try:
+            precio_dec = Decimal(str(precio))
+        except Exception:
+            print(f"[ERROR] No se pudo parsear el precio {precio} para {symbol}.")
+            return cliente
+
         cliente.precio_actual = precio_dec
         cantidad = cliente.cantidad_total if cliente.cantidad_total else Decimal("0")
 
@@ -121,7 +131,7 @@ class CRMService:
             cantidad_restante=cant_dec,
             precio_unitario=precio_con_fee,
             exchange=exchange,
-            notas=notas  # <--- CORREGIDO AQUÍ (antes decía notes=notas)
+            notas=notas
         )
         self.db.add(lote)
 

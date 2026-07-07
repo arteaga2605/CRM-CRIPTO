@@ -609,12 +609,19 @@ if page == "🏠 Dashboard":
         else:
             st.success("No hay alertas activas. Todo en orden! 🎉")
 # ═══════════════════════════════════════
-# PÁGINA: CLIENTES
+# PÁGINA: CLIENTES (con precio promedio sin fee y PnL ajustado)
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
-    st.markdown("El PnL no realizado se calcula con **FIFO** (First In, First Out) e incluye comisiones.")
+    st.markdown("""
+    - **Costo Promedio (con fee)**: incluye comisiones prorrateadas (costo real).
+    - **Precio Promedio (sin fee)**: promedio de los precios de compra sin comisiones.
+    - **PnL FIFO Real**: calculado con FIFO y comisiones (ganancia/pérdida real).
+    - **PnL No Realizado (sin fee)**: basado en el precio promedio sin comisiones (lo que ves en el exchange).
+    - **Los precios se actualizan automáticamente con los datos de Binance cada hora, o manualmente con los botones de abajo.**
+    """)
 
+    # ========== ACTUALIZAR TODOS ==========
     if st.button("🔄 Actualizar todos los precios desde Binance"):
         with st.spinner("Actualizando precios..."):
             clientes_actualizar = fetch("/clientes/")
@@ -622,10 +629,19 @@ elif page == "👥 Clientes":
                 for c in clientes_actualizar:
                     precio_real = obtener_precio_real(c["symbol"])
                     if precio_real > 0:
-                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
-                st.success("Precios actualizados")
+                        resp = post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
+                        if not resp:
+                            st.error(f"Error actualizando {c['symbol']}")
+                    else:
+                        st.warning(f"No se pudo obtener precio para {c['symbol']}")
+                st.success("¡Precios actualizados correctamente!")
+                # Forzar recarga completa
+                st.cache_data.clear()
                 st.rerun()
+            else:
+                st.error("No se pudieron obtener los clientes")
 
+    # ========== OBTENER CLIENTES ==========
     clientes = fetch("/clientes/")
     if not clientes:
         st.warning("No hay clientes registrados. Crea uno nuevo en la pestaña '➕ Nuevo Cliente'")
@@ -642,6 +658,14 @@ elif page == "👥 Clientes":
             cantidad_total = float(c.get("cantidad_total", 0))
             precio_actual = float(c.get("precio_actual", 0))
             
+            # Interacciones de compra para precio promedio sin fee
+            interacciones = fetch(f"/interacciones/cliente/{symbol}")
+            compras = [i for i in interacciones if i.get("tipo") == "compra"] if interacciones else []
+            suma_cantidad = sum(float(i["cantidad"]) for i in compras) if compras else 0
+            suma_precio_cantidad = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in compras) if compras else 0
+            precio_promedio_sin_fee = suma_precio_cantidad / suma_cantidad if suma_cantidad > 0 else 0
+            
+            # FIFO (con fee)
             lotes_cliente = lotes_data.get(symbol, [])
             cantidad_restante_fifo = 0.0
             costo_total_fifo = 0.0
@@ -653,7 +677,10 @@ elif page == "👥 Clientes":
             valor_actual_fifo = cantidad_restante_fifo * precio_actual
             pnl_no_realizado_fifo = valor_actual_fifo - costo_total_fifo
             
-            costo_prom = float(c.get("costo_promedio", 0))
+            # PnL sin fee
+            pnl_no_realizado_sin_fee = cantidad_total * (precio_actual - precio_promedio_sin_fee)
+            
+            costo_prom_con_fee = float(c.get("costo_promedio", 0))
 
             df_data.append({
                 "symbol": symbol,
@@ -661,13 +688,16 @@ elif page == "👥 Clientes":
                 "categoria": c.get("categoria", ""),
                 "estado": c.get("estado", ""),
                 "cantidad_total": cantidad_total,
-                "costo_promedio": costo_prom,
+                "precio_prom_sin_fee": precio_promedio_sin_fee,
+                "costo_prom_con_fee": costo_prom_con_fee,
                 "precio_actual": precio_actual,
                 "valor_mercado": float(c.get("valor_mercado", 0)),
                 "pnl_realizado": float(c.get("pnl_total", 0)),
                 "roi_realizado_pct": float(c.get("roi_porcentaje", 0)),
                 "pnl_fifo_no_realizado": pnl_no_realizado_fifo,
+                "pnl_sin_fee_no_realizado": pnl_no_realizado_sin_fee,
                 "roi_fifo_pct": (pnl_no_realizado_fifo / costo_total_fifo * 100) if costo_total_fifo > 0 else 0,
+                "roi_sin_fee_pct": (pnl_no_realizado_sin_fee / (cantidad_total * precio_promedio_sin_fee) * 100) if cantidad_total > 0 and precio_promedio_sin_fee > 0 else 0,
                 "prioridad": c.get("prioridad", 3),
                 "tags": c.get("tags", ""),
                 "notas": c.get("notas_personal", "")
@@ -681,13 +711,16 @@ elif page == "👥 Clientes":
             "categoria": st.column_config.SelectboxColumn("Categoria", options=CATEGORIAS),
             "estado": st.column_config.SelectboxColumn("Estado", options=["PROSPECTO","ACTIVO_COMPRA","ACTIVO_PELIGRO","DORMANTE","CHURN","VIP"]),
             "cantidad_total": st.column_config.NumberColumn("Cantidad Total", format="%.8f"),
-            "costo_promedio": st.column_config.NumberColumn("Costo Promedio (USD)", format="$%.4f", disabled=True),
-            "precio_actual": st.column_config.NumberColumn("Precio Actual (USD)", format="$%.4f", disabled=True),
+            "precio_prom_sin_fee": st.column_config.NumberColumn("Precio Promedio (sin fee)", format="$%.8f", disabled=True),
+            "costo_prom_con_fee": st.column_config.NumberColumn("Costo Promedio (con fee)", format="$%.8f", disabled=True),
+            "precio_actual": st.column_config.NumberColumn("Precio Actual (USD)", format="$%.8f", disabled=True),
             "valor_mercado": st.column_config.NumberColumn("Valor Mercado (USD)", format="$%.2f", disabled=True),
             "pnl_realizado": st.column_config.NumberColumn("PnL Realizado (USD)", format="$%.2f", disabled=True),
             "roi_realizado_pct": st.column_config.NumberColumn("ROI Realizado %", format="%.2f%%", disabled=True),
-            "pnl_fifo_no_realizado": st.column_config.NumberColumn("PnL FIFO No Realizado (USD)", format="$%.2f"),
+            "pnl_fifo_no_realizado": st.column_config.NumberColumn("PnL FIFO Real (USD)", format="$%.2f"),
+            "pnl_sin_fee_no_realizado": st.column_config.NumberColumn("PnL No Realizado (sin fee)", format="$%.2f"),
             "roi_fifo_pct": st.column_config.NumberColumn("ROI FIFO %", format="%.2f%%"),
+            "roi_sin_fee_pct": st.column_config.NumberColumn("ROI sin fee %", format="%.2f%%"),
             "prioridad": st.column_config.NumberColumn("Prioridad", min_value=1, max_value=5, step=1),
             "tags": st.column_config.TextColumn("Tags"),
             "notas": st.column_config.TextColumn("Notas")
@@ -699,7 +732,7 @@ elif page == "👥 Clientes":
             width='stretch',
             hide_index=True,
             key="clientes_editor",
-            disabled=["symbol", "costo_promedio", "precio_actual", "valor_mercado", "pnl_realizado", "roi_realizado_pct", "pnl_fifo_no_realizado", "roi_fifo_pct"]
+            disabled=["symbol", "precio_prom_sin_fee", "costo_prom_con_fee", "precio_actual", "valor_mercado", "pnl_realizado", "roi_realizado_pct", "pnl_fifo_no_realizado", "pnl_sin_fee_no_realizado", "roi_fifo_pct", "roi_sin_fee_pct"]
         )
 
         if st.button("Guardar cambios realizados"):
@@ -708,7 +741,7 @@ elif page == "👥 Clientes":
                 if not row.equals(original):
                     symbol = row["symbol"]
                     update_data = {}
-                    for col in ["nombre", "categoria", "estado", "cantidad_total", "costo_promedio", "prioridad", "tags", "notas"]:
+                    for col in ["nombre", "categoria", "estado", "cantidad_total", "prioridad", "tags", "notas"]:
                         if row[col] != original[col]:
                             value = row[col]
                             if col == "estado" and value:
@@ -724,6 +757,29 @@ elif page == "👥 Clientes":
                             st.error(f"Error actualizando {symbol}")
             st.rerun()
 
+        # ========== ELIMINAR CLIENTE ==========
+        st.divider()
+        st.subheader("🗑️ Eliminar Cliente")
+        col_del1, col_del2 = st.columns([3, 1])
+        with col_del1:
+            cliente_a_eliminar = st.selectbox(
+                "Selecciona cliente a eliminar",
+                [c["symbol"] for c in clientes] if clientes else [],
+                key="cliente_eliminar"
+            )
+        with col_del2:
+            if st.button("🗑️ Eliminar Cliente", type="primary"):
+                if cliente_a_eliminar:
+                    if st.checkbox(f"Confirmar eliminación de {cliente_a_eliminar} (todos sus datos serán borrados)"):
+                        resp = delete(f"/clientes/{cliente_a_eliminar}")
+                        if resp:
+                            st.success(f"Cliente {cliente_a_eliminar} eliminado exitosamente")
+                            st.rerun()
+                        else:
+                            st.error("Error al eliminar cliente")
+        # ======================================
+
+        # ========== ACTUALIZAR PRECIO INDIVIDUAL (con validación) ==========
         st.subheader("Actualizar Precio Individual y Ver Detalle FIFO")
         col_sel, col_btn = st.columns([3,1])
         with col_sel:
@@ -733,15 +789,23 @@ elif page == "👥 Clientes":
                 if selected_symbol:
                     precio_real = obtener_precio_real(selected_symbol)
                     if precio_real > 0:
-                        resp = post(f"/clientes/{selected_symbol}/actualizar-precio", {"precio": precio_real})
-                        if resp:
-                            st.success(f"Precio de {selected_symbol} actualizado a ${precio_real}")
-                            st.rerun()
-                        else:
-                            st.error("Error al actualizar")
+                        with st.spinner(f"Actualizando precio de {selected_symbol}..."):
+                            try:
+                                r = requests.post(f"{API_URL}/clientes/{selected_symbol}/actualizar-precio", json={"precio": precio_real})
+                                if r.status_code == 200:
+                                    resp = r.json()
+                                    nuevo_precio = resp.get("precio_actual", 0)
+                                    st.success(f"✅ Precio de {selected_symbol} actualizado a ${nuevo_precio:.8f}")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
+                            except Exception as e:
+                                st.error(f"❌ Excepción: {e}")
                     else:
-                        st.error("No se pudo obtener precio de Binance")
+                        st.error("No se pudo obtener precio de Binance para este símbolo")
 
+        # ========== MOSTRAR LOTES (FIFO) ==========
         if selected_symbol:
             st.subheader(f"📦 Lotes de {selected_symbol} (FIFO)")
             lotes_cliente = fetch(f"/lotes/cliente/{selected_symbol}")
@@ -758,6 +822,7 @@ elif page == "👥 Clientes":
             else:
                 st.info("No hay lotes activos para este cliente.")
 
+    # ========== NUEVO CLIENTE ==========
     with st.expander("➕ Nuevo Cliente"):
         with st.form("nuevo_cliente"):
             symbol = st.text_input("Symbol (ej: BTC, ETH)").upper()
@@ -792,9 +857,9 @@ elif page == "💱 Interacciones":
         with col2:
             tipo = st.selectbox("Tipo", ["compra", "venta", "staking", "unstaking", "dividendo", "airdrop"])
         exchange = st.text_input("Exchange", value="binance")
-        cantidad = st.number_input("Cantidad", min_value=0.0, step=0.0001, format="%.8f")
-        precio = st.number_input("Precio unitario (USD)", min_value=0.0, step=0.01)
-        fee = st.number_input("Fee", min_value=0.0, step=0.01)
+        cantidad = st.number_input("Cantidad", min_value=0.0, step=0.00000001, format="%.8f")
+        precio = st.number_input("Precio unitario (USD)", min_value=0.0, step=0.00000001, format="%.8f")
+        fee = st.number_input("Fee", min_value=0.0, step=0.00000001, format="%.8f")
         notas = st.text_area("Notas de la interaccion")
         if st.form_submit_button("Registrar Interaccion"):
             if symbol and cantidad > 0 and precio > 0:
@@ -828,7 +893,7 @@ elif page == "💱 Interacciones":
                 with col2:
                     st.write(f"{float(row.get('cantidad', 0)):.8f}")
                 with col3:
-                    st.write(f"${float(row.get('precio_unitario', 0)):.2f}")
+                    st.write(f"${float(row.get('precio_unitario', 0)):.8f}")
                 with col4:
                     st.write(f"${float(row.get('monto_usd', 0)):.2f}")
                 with col5:
@@ -1502,10 +1567,30 @@ elif page == "📊 P2P Binance":
 # PÁGINA: CONFIGURACION
 # ═══════════════════════════════════════
 elif page == "⚙️ Configuracion":
-    st.title("⚙️ Configuracion")
+    st.title("⚙️ Configuración")
     st.info("Configuración de Exchange y alertas (simulada).")
     with st.form("exchange_config"):
         exchange = st.selectbox("Exchange", ["binance", "coinbase", "kraken", "bybit"])
         api_key = st.text_input("API Key", type="password")
         api_secret = st.text_input("API Secret", type="password")
         st.form_submit_button("Guardar")
+    
+    st.divider()
+    st.subheader("💾 Respaldo de Base de Datos")
+    st.markdown("Descarga un respaldo completo de la base de datos (archivo .db).")
+    if st.button("📥 Descargar respaldo de base de datos"):
+        try:
+            r = requests.get(f"{API_URL}/export-db")
+            if r.status_code == 200:
+                st.download_button(
+                    label="💾 Descargar crypto_crm_backup.db",
+                    data=r.content,
+                    file_name="crypto_crm_backup.db",
+                    mime="application/x-sqlite3"
+                )
+                st.success("Respaldo generado correctamente.")
+            else:
+                st.error(f"Error al exportar: {r.text}")
+        except Exception as e:
+            st.error(f"Error: {e}")
+    st.info("Para restaurar un respaldo, reemplaza manualmente el archivo crypto_crm.db en la carpeta del proyecto y reinicia la aplicación.")

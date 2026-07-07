@@ -4,6 +4,9 @@ from sqlalchemy.orm import Session
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 import atexit
+import os
+import shutil
+from fastapi.responses import FileResponse
 
 from app.models import init_db, SessionLocal, ClienteCripto
 from app.api import clientes, interacciones, oportunidades, tareas, lotes
@@ -130,7 +133,8 @@ def root():
             "binance-events": "/binance-events",
             "notifications": "/notifications",
             "notifications/read": "/notifications/read (POST)",
-            "p2p": "/p2p/best-prices"
+            "p2p": "/p2p/best-prices",
+            "export-db": "/export-db (GET)"
         }
     }
 
@@ -251,3 +255,20 @@ def trigger_notifications(db: Session = Depends(get_db)):
     service = NotificationService(db)
     results = service.generate_all_alerts()
     return results
+
+# ========== EXPORTAR BASE DE DATOS ==========
+@app.get("/export-db")
+def export_db():
+    db_path = "crypto_crm.db"
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=404, detail="Database not found")
+    temp_path = "crypto_crm_temp.db"
+    try:
+        shutil.copy2(db_path, temp_path)
+        return FileResponse(
+            temp_path,
+            media_type="application/x-sqlite3",
+            filename="crypto_crm_backup.db"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

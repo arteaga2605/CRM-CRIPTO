@@ -48,10 +48,10 @@ class ClienteCripto(Base):
     precio_actual = Column(Numeric(20, 8), default=0)
     cantidad_total = Column(Numeric(20, 8), default=0)
     costo_promedio = Column(Numeric(20, 8), default=0)
-    inversion_total = Column(Numeric(20, 2), default=0)
-    valor_mercado = Column(Numeric(20, 2), default=0)
-    pnl_total = Column(Numeric(20, 2), default=0)
-    roi_porcentaje = Column(Numeric(10, 2), default=0)
+    inversion_total = Column(Numeric(20, 8), default=0)
+    valor_mercado = Column(Numeric(20, 8), default=0)
+    pnl_total = Column(Numeric(20, 8), default=0)
+    roi_porcentaje = Column(Numeric(20, 4), default=0)
 
     estado = Column(Enum(EstadoCliente), default=EstadoCliente.PROSPECTO)
     sentiment_score = Column(Numeric(3, 2), default=0)
@@ -78,16 +78,16 @@ class Interaccion(Base):
     cliente_id = Column(Integer, ForeignKey("clientes_cripto.id"), nullable=False)
     tipo = Column(Enum(TipoInteraccion), nullable=False)
 
-    monto_usd = Column(Numeric(20, 2), default=0)
+    monto_usd = Column(Numeric(20, 8), default=0)
     precio_unitario = Column(Numeric(20, 8), nullable=False)
     cantidad = Column(Numeric(20, 8), nullable=False)
-    fee = Column(Numeric(20, 4), default=0)
+    fee = Column(Numeric(20, 8), default=0)
     exchange = Column(String(50), default="binance")
 
     timestamp = Column(DateTime, default=datetime.utcnow)
     notas = Column(Text, default="")
 
-    pnl_realizado = Column(Numeric(20, 2), default=0)
+    pnl_realizado = Column(Numeric(20, 8), default=0)
 
     cliente = relationship("ClienteCripto", back_populates="interacciones")
 
@@ -125,14 +125,14 @@ class Oportunidad(Base):
     precio_entrada = Column(Numeric(20, 8))
     precio_objetivo = Column(Numeric(20, 8))
     precio_stop_loss = Column(Numeric(20, 8))
-    riesgo_beneficio = Column(Numeric(5, 2))
-    monto_planificado = Column(Numeric(20, 2), default=0)
+    riesgo_beneficio = Column(Numeric(20, 4))
+    monto_planificado = Column(Numeric(20, 8), default=0)
 
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     fecha_ejecucion = Column(DateTime)
     confianza = Column(Integer, default=3)
     notas_analisis = Column(Text, default="")
-    resultado_pnl = Column(Numeric(20, 2))
+    resultado_pnl = Column(Numeric(20, 8))
 
     cliente = relationship("ClienteCripto", back_populates="oportunidades")
 
@@ -180,7 +180,7 @@ class Notification(Base):
 
     id = Column(Integer, primary_key=True)
     message = Column(String(500), nullable=False)
-    type = Column(String(50), nullable=False)  # price_alert, trend_change, opportunity, task_reminder
+    type = Column(String(50), nullable=False)
     related_id = Column(Integer, nullable=True)
     is_read = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)

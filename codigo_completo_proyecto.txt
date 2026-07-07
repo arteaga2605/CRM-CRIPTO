@@ -1,0 +1,4131 @@
+================================================================================
+  ARCHIVO: app/main.py
+================================================================================
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy.orm import Session
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+import atexit
+import os
+import shutil
+from fastapi.responses import FileResponse
+
+from app.models import init_db, SessionLocal, ClienteCripto
+from app.api import clientes, interacciones, oportunidades, tareas, lotes
+from app.services.exchange_sync import ExchangeConnector
+from app.services.analytics import AnalyticsService
+from app.services.binance_events import BinanceEventService
+from app.services.notification_service import NotificationService
+from app.services.crm_service import CRMService
+from app.services.p2p_service import P2PService
+
+app = FastAPI(
+    title="Crypto CRM",
+    description="Tratando criptomonedas como clientes - Sistema de gestion de portafolio",
+    version="2.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+init_db()
+
+app.include_router(clientes.router)
+app.include_router(interacciones.router)
+app.include_router(oportunidades.router)
+app.include_router(tareas.router)
+app.include_router(lotes.router)
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ========== TAREAS PROGRAMADAS (APScheduler) ==========
+def actualizar_precios_automatico():
+    db = SessionLocal()
+    try:
+        crm = CRMService(db)
+        connector = ExchangeConnector()
+        clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
+        actualizados = 0
+        for cliente in clientes:
+            precio = connector.obtener_precio(cliente.symbol)
+            if precio > 0:
+                crm.actualizar_precio_mercado(cliente.symbol, precio)
+                actualizados += 1
+        print(f"[SCHEDULER] Precios actualizados automáticamente: {actualizados} de {len(clientes)} clientes.")
+    except Exception as e:
+        print(f"[SCHEDULER] Error actualizando precios: {e}")
+    finally:
+        db.close()
+
+def generar_notificaciones_automaticas():
+    db = SessionLocal()
+    try:
+        service = NotificationService(db)
+        results = service.generate_all_alerts()
+        print(f"[SCHEDULER] Notificaciones generadas: {results}")
+    except Exception as e:
+        print(f"[SCHEDULER] Error generando notificaciones: {e}")
+    finally:
+        db.close()
+
+def actualizar_precios_p2p():
+    try:
+        for asset in ["USDT", "BTC"]:
+            for fiat in ["ARS", "MXN"]:
+                datos = P2PService.get_best_prices(asset, fiat)
+                print(f"[P2P] {asset}/{fiat}: spread {datos['spread_pct']}%")
+    except Exception as e:
+        print(f"[P2P] Error: {e}")
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(
+    func=actualizar_precios_automatico,
+    trigger=IntervalTrigger(hours=1),
+    id='actualizar_precios_hora',
+    replace_existing=True
+)
+scheduler.add_job(
+    func=generar_notificaciones_automaticas,
+    trigger=IntervalTrigger(minutes=5),
+    id='notificaciones_auto',
+    replace_existing=True
+)
+scheduler.add_job(
+    func=actualizar_precios_p2p,
+    trigger=IntervalTrigger(minutes=5),
+    id='actualizar_p2p',
+    replace_existing=True
+)
+scheduler.start()
+atexit.register(lambda: scheduler.shutdown())
+
+# ========== ENDPOINTS ==========
+@app.get("/")
+def root():
+    return {
+        "message": "Crypto CRM API",
+        "docs": "/docs",
+        "endpoints": {
+            "clientes": "/clientes",
+            "interacciones": "/interacciones",
+            "oportunidades": "/oportunidades",
+            "tareas": "/tareas",
+            "lotes": "/lotes/cliente/{symbol}",
+            "precios": "/precios/{symbol}",
+            "ticker": "/ticker/{symbol}",
+            "daily-pnl": "/analytics/daily-pnl",
+            "performance-by-category": "/analytics/performance-by-category",
+            "realized-pnl-summary": "/analytics/realized-pnl-summary",
+            "binance-events": "/binance-events",
+            "notifications": "/notifications",
+            "notifications/read": "/notifications/read (POST)",
+            "p2p": "/p2p/best-prices",
+            "export-db": "/export-db (GET)"
+        }
+    }
+
+@app.get("/precios/{symbol}")
+def obtener_precio_real(symbol: str, vs: str = "USDT"):
+    connector = ExchangeConnector()
+    precio = connector.obtener_precio(symbol.upper(), vs)
+    return {"symbol": symbol.upper(), "price": precio, "vs_currency": vs}
+
+@app.get("/ticker/{symbol}")
+def obtener_ticker_real(symbol: str, vs: str = "USDT"):
+    connector = ExchangeConnector()
+    ticker = connector.obtener_ticker(symbol.upper(), vs)
+    return ticker
+
+@app.get("/velas/{symbol}")
+def obtener_velas(symbol: str, timeframe: str = "1h", limit: int = 100, vs: str = "USDT"):
+    connector = ExchangeConnector()
+    velas = connector.obtener_velas(symbol.upper(), timeframe, limit, vs)
+    return {"symbol": symbol.upper(), "timeframe": timeframe, "data": velas}
+
+@app.get("/dashboard/resumen")
+def resumen_dashboard(db: Session = Depends(get_db)):
+    from app.services.crm_service import CRMService
+    crm = CRMService(db)
+    analytics = AnalyticsService(db)
+    return {
+        "resumen": crm.resumen_portafolio(),
+        "top_performers": [
+            {"symbol": c.symbol, "roi": float(c.roi_porcentaje)}
+            for c in crm.top_performers(5)
+        ],
+        "alertas": analytics.alertas_inteligentes(),
+        "distribucion": analytics.distribucion_portafolio()[:5]
+    }
+
+@app.get("/analytics/daily-pnl")
+def get_daily_pnl(days: int = 7, db: Session = Depends(get_db)):
+    analytics = AnalyticsService(db)
+    return analytics.daily_pnl(days)
+
+@app.get("/analytics/performance-by-category")
+def get_performance_by_category(db: Session = Depends(get_db)):
+    analytics = AnalyticsService(db)
+    return analytics.rendimiento_por_categoria()
+
+@app.get("/analytics/realized-pnl-summary")
+def get_realized_pnl_summary(db: Session = Depends(get_db)):
+    analytics = AnalyticsService(db)
+    return analytics.ganancias_perdidas_realizadas()
+
+@app.get("/p2p/best-prices")
+def get_p2p_best_prices(asset: str = "USDT", fiat: str = "ARS"):
+    return P2PService.get_best_prices(asset, fiat)
+
+@app.get("/binance-events")
+def get_binance_events(limit: int = 20, db: Session = Depends(get_db)):
+    service = BinanceEventService(db)
+    events = service.get_active_events(limit)
+    return [
+        {
+            "id": e.id,
+            "title": e.title,
+            "description": e.description,
+            "event_type": e.event_type,
+            "url": e.url,
+            "event_date": e.event_date.isoformat() if e.event_date else None,
+            "detected_at": e.detected_at.isoformat()
+        }
+        for e in events
+    ]
+
+@app.post("/binance-events/update")
+def update_binance_events(db: Session = Depends(get_db)):
+    service = BinanceEventService(db)
+    saved = service.update_events()
+    if saved == 0:
+        return {"message": "No se encontraron nuevos eventos."}
+    return {"message": f"Actualización completada. {saved} nuevos eventos guardados."}
+
+# ========== NOTIFICACIONES ==========
+@app.get("/notifications")
+def get_notifications(limit: int = 20, unread_only: bool = False, db: Session = Depends(get_db)):
+    service = NotificationService(db)
+    if unread_only:
+        notifs = service.get_unread_notifications(limit)
+    else:
+        notifs = service.get_recent_notifications(limit)
+    return [
+        {
+            "id": n.id,
+            "message": n.message,
+            "type": n.type,
+            "related_id": n.related_id,
+            "is_read": n.is_read,
+            "created_at": n.created_at.isoformat()
+        }
+        for n in notifs
+    ]
+
+@app.post("/notifications/read/{notif_id}")
+def mark_notification_read(notif_id: int, db: Session = Depends(get_db)):
+    service = NotificationService(db)
+    if service.mark_as_read(notif_id):
+        return {"message": "Notificación marcada como leída"}
+    else:
+        raise HTTPException(status_code=404, detail="Notificación no encontrada")
+
+@app.post("/notifications/read-all")
+def mark_all_notifications_read(db: Session = Depends(get_db)):
+    service = NotificationService(db)
+    service.mark_all_as_read()
+    return {"message": "Todas las notificaciones marcadas como leídas"}
+
+@app.post("/notifications/generate")
+def trigger_notifications(db: Session = Depends(get_db)):
+    service = NotificationService(db)
+    results = service.generate_all_alerts()
+    return results
+
+# ========== EXPORTAR BASE DE DATOS ==========
+@app.get("/export-db")
+def export_db():
+    db_path = "crypto_crm.db"
+    if not os.path.exists(db_path):
+        raise HTTPException(status_code=404, detail="Database not found")
+    temp_path = "crypto_crm_temp.db"
+    try:
+        shutil.copy2(db_path, temp_path)
+        return FileResponse(
+            temp_path,
+            media_type="application/x-sqlite3",
+            filename="crypto_crm_backup.db"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+================================================================================
+  FIN DE ARCHIVO: app/main.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/models.py
+================================================================================
+from sqlalchemy import (
+    create_engine, Column, Integer, String, Float, DateTime, 
+    Boolean, ForeignKey, Text, Enum, Numeric
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import relationship, sessionmaker
+from datetime import datetime
+import enum
+
+Base = declarative_base()
+
+# ─── ENUMS ───
+class EstadoCliente(enum.Enum):
+    PROSPECTO = "prospecto"
+    ACTIVO_COMPRA = "activo_compra"
+    ACTIVO_PELIGRO = "activo_peligro"
+    DORMANTE = "dormante"
+    CHURN = "churn"
+    VIP = "vip"
+
+class TipoInteraccion(enum.Enum):
+    COMPRA = "compra"
+    VENTA = "venta"
+    STAKING = "staking"
+    UNSTAKING = "unstaking"
+    TRANSFERENCIA = "transferencia"
+    DIVIDENDO = "dividendo"
+    AIRDROP = "airdrop"
+
+class TipoOportunidad(enum.Enum):
+    SWING = "swing_trade"
+    SCALP = "scalp"
+    DCA = "dca"
+    STAKING_OPP = "staking"
+    BREAKOUT = "breakout"
+    REVERSAL = "reversal"
+
+# ─── CLIENTE CRIPTO ───
+class ClienteCripto(Base):
+    __tablename__ = "clientes_cripto"
+
+    id = Column(Integer, primary_key=True)
+    symbol = Column(String(20), unique=True, nullable=False, index=True)
+    nombre = Column(String(100))
+    categoria = Column(String(50), default="desconocida")
+
+    exchange_principal = Column(String(50), default="binance")
+    precio_actual = Column(Numeric(20, 8), default=0)
+    cantidad_total = Column(Numeric(20, 8), default=0)
+    costo_promedio = Column(Numeric(20, 8), default=0)
+    inversion_total = Column(Numeric(20, 2), default=0)
+    valor_mercado = Column(Numeric(20, 2), default=0)
+    pnl_total = Column(Numeric(20, 2), default=0)
+    roi_porcentaje = Column(Numeric(10, 2), default=0)
+
+    estado = Column(Enum(EstadoCliente), default=EstadoCliente.PROSPECTO)
+    sentiment_score = Column(Numeric(3, 2), default=0)
+    prioridad = Column(Integer, default=3)
+
+    tags = Column(String(255), default="")
+    notas_personal = Column(Text, default="")
+    fecha_ultimo_contacto = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    fecha_creacion = Column(DateTime, default=datetime.utcnow)
+
+    interacciones = relationship("Interaccion", back_populates="cliente", cascade="all, delete-orphan")
+    oportunidades = relationship("Oportunidad", back_populates="cliente", cascade="all, delete-orphan")
+    tareas = relationship("Tarea", back_populates="cliente", cascade="all, delete-orphan")
+    lotes = relationship("LoteCompra", back_populates="cliente", cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f"<ClienteCripto({self.symbol}: {self.estado.value}, ROI={self.roi_porcentaje}%)>"
+
+# ─── INTERACCION ───
+class Interaccion(Base):
+    __tablename__ = "interacciones"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes_cripto.id"), nullable=False)
+    tipo = Column(Enum(TipoInteraccion), nullable=False)
+
+    monto_usd = Column(Numeric(20, 2), default=0)
+    precio_unitario = Column(Numeric(20, 8), nullable=False)
+    cantidad = Column(Numeric(20, 8), nullable=False)
+    fee = Column(Numeric(20, 4), default=0)
+    exchange = Column(String(50), default="binance")
+
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    notas = Column(Text, default="")
+
+    pnl_realizado = Column(Numeric(20, 2), default=0)
+
+    cliente = relationship("ClienteCripto", back_populates="interacciones")
+
+    def __repr__(self):
+        return f"<Interaccion({self.tipo.value} {self.cantidad} {self.cliente.symbol})>"
+
+# ─── LOTE DE COMPRA (FIFO) ───
+class LoteCompra(Base):
+    __tablename__ = "lotes_compra"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes_cripto.id"), nullable=False)
+    cantidad = Column(Numeric(20, 8), nullable=False)
+    cantidad_restante = Column(Numeric(20, 8), nullable=False)
+    precio_unitario = Column(Numeric(20, 8), nullable=False)
+    fecha_compra = Column(DateTime, default=datetime.utcnow)
+    exchange = Column(String(50), default="binance")
+    notas = Column(Text, default="")
+
+    cliente = relationship("ClienteCripto", back_populates="lotes")
+
+    def __repr__(self):
+        return f"<LoteCompra({self.cliente.symbol} {self.cantidad}@{self.precio_unitario} restante={self.cantidad_restante})>"
+
+# ─── OPORTUNIDAD ───
+class Oportunidad(Base):
+    __tablename__ = "oportunidades"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes_cripto.id"), nullable=False)
+
+    tipo = Column(Enum(TipoOportunidad), default=TipoOportunidad.SWING)
+    estado = Column(String(20), default="abierta")
+
+    precio_entrada = Column(Numeric(20, 8))
+    precio_objetivo = Column(Numeric(20, 8))
+    precio_stop_loss = Column(Numeric(20, 8))
+    riesgo_beneficio = Column(Numeric(5, 2))
+    monto_planificado = Column(Numeric(20, 2), default=0)
+
+    fecha_creacion = Column(DateTime, default=datetime.utcnow)
+    fecha_ejecucion = Column(DateTime)
+    confianza = Column(Integer, default=3)
+    notas_analisis = Column(Text, default="")
+    resultado_pnl = Column(Numeric(20, 2))
+
+    cliente = relationship("ClienteCripto", back_populates="oportunidades")
+
+    def __repr__(self):
+        return f"<Oportunidad({self.cliente.symbol} {self.tipo.value} R:R={self.riesgo_beneficio})>"
+
+# ─── TAREA ───
+class Tarea(Base):
+    __tablename__ = "tareas"
+
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes_cripto.id"), nullable=False)
+
+    tipo_tarea = Column(String(50))
+    descripcion = Column(Text)
+    fecha_limite = Column(DateTime)
+    completada = Column(Boolean, default=False)
+    fecha_completada = Column(DateTime)
+    prioridad = Column(Integer, default=2)
+
+    cliente = relationship("ClienteCripto", back_populates="tareas")
+
+    def __repr__(self):
+        return f"<Tarea({self.cliente.symbol}: {self.tipo_tarea})>"
+
+# ─── EVENTOS DE BINANCE ───
+class BinanceEvent(Base):
+    __tablename__ = "binance_events"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    event_type = Column(String(50), nullable=False)
+    url = Column(String(500), nullable=True)
+    event_date = Column(DateTime, nullable=True)
+    detected_at = Column(DateTime, default=datetime.utcnow)
+    is_active = Column(Boolean, default=True)
+
+    def __repr__(self):
+        return f"<BinanceEvent({self.event_type}: {self.title})>"
+
+# ─── NOTIFICACIONES ───
+class Notification(Base):
+    __tablename__ = "notifications"
+
+    id = Column(Integer, primary_key=True)
+    message = Column(String(500), nullable=False)
+    type = Column(String(50), nullable=False)
+    related_id = Column(Integer, nullable=True)
+    is_read = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<Notification({self.type}: {self.message[:50]})>"
+
+# ─── CONFIGURACION DB ───
+DATABASE_URL = "sqlite:///./crypto_crm.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+def init_db():
+    Base.metadata.create_all(bind=engine)
+
+================================================================================
+  FIN DE ARCHIVO: app/models.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/schemas.py
+================================================================================
+from pydantic import BaseModel, Field, validator
+from typing import Optional, List
+from datetime import datetime
+from decimal import Decimal
+
+CATEGORIAS_VALIDAS = [
+    "BNB Chain", "Solana", "RWA", "MEME", "Pagos", "IA",
+    "Capa 1/Capa 2", "Fase semilla", "Launchpool", "New", "Megadrop",
+    "Juegos", "DeFi", "En observación", "Fan Token", "Infraestructura",
+    "Almacenamiento", "NFT", "Launchpad", "Yzi", "desconocida"
+]
+
+class ClienteCriptoBase(BaseModel):
+    symbol: str = Field(..., min_length=1, max_length=20)
+    nombre: Optional[str] = None
+    categoria: Optional[str] = "desconocida"
+    tags: Optional[str] = ""
+    notas_personal: Optional[str] = ""
+
+    @validator('categoria')
+    def validate_categoria(cls, v):
+        if v and v not in CATEGORIAS_VALIDAS:
+            pass
+        return v
+
+class ClienteCriptoCreate(ClienteCriptoBase):
+    pass
+
+class ClienteCriptoUpdate(BaseModel):
+    symbol: Optional[str] = None
+    nombre: Optional[str] = None
+    categoria: Optional[str] = None
+    exchange_principal: Optional[str] = None
+    cantidad_total: Optional[Decimal] = None
+    costo_promedio: Optional[Decimal] = None
+    inversion_total: Optional[Decimal] = None
+    precio_actual: Optional[Decimal] = None
+    valor_mercado: Optional[Decimal] = None
+    pnl_total: Optional[Decimal] = None
+    roi_porcentaje: Optional[Decimal] = None
+    estado: Optional[str] = None
+    sentiment_score: Optional[Decimal] = None
+    prioridad: Optional[int] = Field(None, ge=1, le=5)
+    tags: Optional[str] = None
+    notas_personal: Optional[str] = None
+    fecha_ultimo_contacto: Optional[datetime] = None
+
+    @validator('estado')
+    def validate_estado(cls, v):
+        if v is not None:
+            allowed = ['PROSPECTO', 'ACTIVO_COMPRA', 'ACTIVO_PELIGRO', 'DORMANTE', 'CHURN', 'VIP']
+            if v.upper() not in allowed:
+                raise ValueError(f'Estado inválido. Debe ser uno de {allowed}')
+            return v.upper()
+        return v
+
+class ClienteCriptoResponse(ClienteCriptoBase):
+    id: int
+    exchange_principal: str
+    precio_actual: Decimal
+    cantidad_total: Decimal
+    costo_promedio: Decimal
+    inversion_total: Decimal
+    valor_mercado: Decimal
+    pnl_total: Decimal
+    roi_porcentaje: Decimal
+    estado: str
+    sentiment_score: Decimal
+    prioridad: int
+    fecha_ultimo_contacto: datetime
+    fecha_creacion: datetime
+
+    class Config:
+        from_attributes = True
+
+class InteraccionBase(BaseModel):
+    tipo: str
+    cantidad: Decimal = Field(..., gt=0)
+    precio_unitario: Decimal = Field(..., gt=0)
+    fee: Optional[Decimal] = Decimal("0")
+    exchange: Optional[str] = "binance"
+    notas: Optional[str] = ""
+
+class InteraccionCreate(InteraccionBase):
+    cliente_symbol: str
+
+class InteraccionResponse(InteraccionBase):
+    id: int
+    cliente_id: int
+    monto_usd: Decimal
+    pnl_realizado: Decimal
+    timestamp: datetime
+
+    class Config:
+        from_attributes = True
+
+class LoteCompraBase(BaseModel):
+    cantidad: Decimal = Field(..., gt=0)
+    precio_unitario: Decimal = Field(..., gt=0)
+    exchange: Optional[str] = "binance"
+    notas: Optional[str] = ""
+
+class LoteCompraCreate(LoteCompraBase):
+    cliente_symbol: str
+
+class LoteCompraResponse(LoteCompraBase):
+    id: int
+    cliente_id: int
+    cantidad_restante: Decimal
+    fecha_compra: datetime
+
+    class Config:
+        from_attributes = True
+
+class OportunidadBase(BaseModel):
+    tipo: Optional[str] = "swing_trade"
+    precio_entrada: Decimal = Field(..., gt=0)
+    precio_objetivo: Decimal = Field(..., gt=0)
+    precio_stop_loss: Decimal = Field(..., gt=0)
+    monto_planificado: Optional[Decimal] = Decimal("0")
+    confianza: Optional[int] = Field(3, ge=1, le=5)
+    notas_analisis: Optional[str] = ""
+
+    @validator('tipo')
+    def validate_tipo(cls, v):
+        if v is not None:
+            mapping = {
+                "swing_trade": "swing_trade",
+                "scalp": "scalp",
+                "dca": "dca",
+                "staking": "staking",
+                "breakout": "breakout",
+                "reversal": "reversal",
+                "SWING": "swing_trade",
+                "SCALP": "scalp",
+                "DCA": "dca",
+                "STAKING": "staking",
+                "BREAKOUT": "breakout",
+                "REVERSAL": "reversal"
+            }
+            v_lower = v.lower()
+            if v_lower in mapping:
+                return mapping[v_lower]
+            else:
+                return v.lower()
+        return v
+
+class OportunidadCreate(OportunidadBase):
+    cliente_symbol: str
+
+class OportunidadResponse(OportunidadBase):
+    id: int
+    cliente_id: int
+    estado: str
+    riesgo_beneficio: Decimal
+    fecha_creacion: datetime
+    resultado_pnl: Optional[Decimal]
+
+    class Config:
+        from_attributes = True
+
+class TareaBase(BaseModel):
+    tipo_tarea: str
+    descripcion: str
+    fecha_limite: Optional[datetime] = None
+    prioridad: Optional[int] = Field(2, ge=1, le=5)
+
+class TareaCreate(TareaBase):
+    cliente_symbol: str
+
+class TareaResponse(TareaBase):
+    id: int
+    cliente_id: int
+    completada: bool
+    fecha_completada: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+class DashboardResumen(BaseModel):
+    total_clientes: int
+    clientes_activos: int
+    clientes_vip: int
+    clientes_peligro: int
+    pnl_total_portafolio: Decimal
+    roi_promedio: Decimal
+    tareas_pendientes: int
+    oportunidades_abiertas: int
+
+class ClienteConMetricas(BaseModel):
+    cliente: ClienteCriptoResponse
+    total_interacciones: int
+    ultima_interaccion: Optional[datetime]
+    oportunidades_count: int
+    tareas_pendientes: int
+
+================================================================================
+  FIN DE ARCHIVO: app/schemas.py
+================================================================================
+
+[CONTINÚA EN LA SIGUIENTE RESPUESTA POR LÍMITES DE TAMAÑO]
+
+================================================================================
+  ARCHIVO: app/services/crm_service.py
+================================================================================
+from typing import List, Optional, Dict, Any
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from datetime import datetime, timedelta
+from decimal import Decimal
+
+from app.models import (
+    ClienteCripto, Interaccion, Oportunidad, Tarea, LoteCompra,
+    EstadoCliente, TipoInteraccion, TipoOportunidad
+)
+
+class CRMService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    # ═══════════════════════════════════════
+    # GESTION DE CLIENTES (CRIPTO)
+    # ═══════════════════════════════════════
+
+    def registrar_cliente(self, symbol: str, nombre: str = None, 
+                          categoria: str = "desconocida", **kwargs) -> ClienteCripto:
+        symbol = symbol.upper()
+        existente = self.db.query(ClienteCripto).filter_by(symbol=symbol).first()
+        if existente:
+            raise ValueError(f"El cliente {symbol} ya existe en el CRM")
+
+        cliente = ClienteCripto(
+            symbol=symbol,
+            nombre=nombre or symbol,
+            categoria=categoria,
+            **kwargs
+        )
+        self.db.add(cliente)
+        self.db.commit()
+        self.db.refresh(cliente)
+        return cliente
+
+    def obtener_cliente(self, symbol: str) -> Optional[ClienteCripto]:
+        return self.db.query(ClienteCripto).filter_by(symbol=symbol.upper()).first()
+
+    def listar_clientes(self, estado: str = None, categoria: str = None,
+                        min_roi: float = None, tags: str = None) -> List[ClienteCripto]:
+        query = self.db.query(ClienteCripto)
+        if estado:
+            query = query.filter(ClienteCripto.estado == estado)
+        if categoria:
+            query = query.filter(ClienteCripto.categoria == categoria)
+        if min_roi is not None:
+            query = query.filter(ClienteCripto.roi_porcentaje >= min_roi)
+        if tags:
+            query = query.filter(ClienteCripto.tags.contains(tags))
+        return query.order_by(ClienteCripto.prioridad).all()
+
+    def actualizar_estado_cliente(self, symbol: str) -> Optional[ClienteCripto]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return None
+
+        roi = float(cliente.roi_porcentaje) if cliente.roi_porcentaje else 0
+        cantidad = float(cliente.cantidad_total) if cliente.cantidad_total else 0
+
+        if cantidad == 0:
+            nuevo_estado = EstadoCliente.PROSPECTO
+        elif roi > 50:
+            nuevo_estado = EstadoCliente.VIP
+        elif roi < -20:
+            nuevo_estado = EstadoCliente.ACTIVO_PELIGRO
+        elif roi == 0 and cantidad > 0:
+            nuevo_estado = EstadoCliente.DORMANTE
+        elif roi > 0:
+            nuevo_estado = EstadoCliente.ACTIVO_COMPRA
+        else:
+            nuevo_estado = EstadoCliente.ACTIVO_PELIGRO
+
+        cliente.estado = nuevo_estado
+        self.db.commit()
+        return cliente
+
+    def actualizar_precio_mercado(self, symbol: str, precio: float) -> ClienteCripto:
+        print(f"[ACTUALIZAR PRECIO] {symbol} -> {precio}")
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no encontrado")
+
+        cliente.precio_actual = Decimal(str(precio))
+        cantidad = float(cliente.cantidad_total)
+
+        if cantidad > 0:
+            cliente.valor_mercado = Decimal(str(precio * cantidad))
+            costo_total = float(cliente.cantidad_total) * float(cliente.costo_promedio)
+            if costo_total > 0:
+                cliente.pnl_total = cliente.valor_mercado - Decimal(str(costo_total))
+                cliente.roi_porcentaje = (cliente.pnl_total / Decimal(str(costo_total))) * 100
+
+        self.db.commit()
+        self.actualizar_estado_cliente(symbol)
+        return cliente
+
+    # ═══════════════════════════════════════
+    # INTERACCIONES CON FIFO Y COMISIONES
+    # ═══════════════════════════════════════
+
+    def registrar_compra(self, symbol: str, cantidad: float, precio: float,
+                         fee: float = 0.0, exchange: str = "binance", notas: str = "") -> Dict[str, Any]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Criptomoneda {symbol} no registrada")
+
+        costo_total = cantidad * precio + fee
+        precio_con_fee = costo_total / cantidad
+
+        lote = LoteCompra(
+            cliente_id=cliente.id,
+            cantidad=Decimal(str(cantidad)),
+            cantidad_restante=Decimal(str(cantidad)),
+            precio_unitario=Decimal(str(precio_con_fee)),
+            exchange=exchange,
+            notas=notas
+        )
+        self.db.add(lote)
+
+        monto = cantidad * precio
+        interaccion = Interaccion(
+            cliente_id=cliente.id,
+            tipo=TipoInteraccion.COMPRA,
+            cantidad=Decimal(str(cantidad)),
+            precio_unitario=Decimal(str(precio)),
+            monto_usd=Decimal(str(monto)),
+            fee=Decimal(str(fee)),
+            exchange=exchange,
+            notas=notas
+        )
+        self.db.add(interaccion)
+
+        total_previo = float(cliente.cantidad_total) * float(cliente.costo_promedio)
+        total_nuevo = costo_total
+        nueva_cantidad = float(cliente.cantidad_total) + cantidad
+        if nueva_cantidad > 0:
+            cliente.costo_promedio = Decimal(str((total_previo + total_nuevo) / nueva_cantidad))
+        cliente.cantidad_total = Decimal(str(nueva_cantidad))
+        cliente.inversion_total += Decimal(str(costo_total))
+
+        self.db.commit()
+        self.db.refresh(lote)
+        self.actualizar_estado_cliente(symbol)
+
+        return {"lote": lote, "interaccion": interaccion}
+
+    def registrar_venta_fifo(self, symbol: str, cantidad_vender: float, precio_venta: float,
+                             fee: float = 0.0, exchange: str = "binance", notas: str = "") -> Dict[str, Any]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no existe")
+
+        cantidad_vender = Decimal(str(cantidad_vender))
+        if cantidad_vender > cliente.cantidad_total:
+            raise ValueError(f"No hay suficiente cantidad para vender. Disponible: {cliente.cantidad_total}")
+
+        lotes = self.db.query(LoteCompra).filter(
+            LoteCompra.cliente_id == cliente.id,
+            LoteCompra.cantidad_restante > 0
+        ).order_by(LoteCompra.fecha_compra.asc()).all()
+
+        if not lotes:
+            raise ValueError("No hay lotes de compra para este cliente")
+
+        cantidad_a_vender = cantidad_vender
+        pnl_total = Decimal("0")
+        detalles_consumo = []
+
+        for lote in lotes:
+            if cantidad_a_vender <= 0:
+                break
+            disponible = lote.cantidad_restante
+            a_consumir = min(disponible, cantidad_a_vender)
+
+            precio_compra_con_fee = lote.precio_unitario
+            precio_venta_dec = Decimal(str(precio_venta))
+            pnl_lote = (precio_venta_dec - precio_compra_con_fee) * a_consumir
+            pnl_total += pnl_lote
+
+            lote.cantidad_restante -= a_consumir
+            cantidad_a_vender -= a_consumir
+
+            detalles_consumo.append({
+                "lote_id": lote.id,
+                "cantidad": float(a_consumir),
+                "precio_compra": float(precio_compra_con_fee),
+                "pnl_lote": float(pnl_lote)
+            })
+
+        pnl_total -= Decimal(str(fee))
+        cantidad_vendida = cantidad_vender - cantidad_a_vender
+        monto = float(cantidad_vendida) * precio_venta
+
+        interaccion = Interaccion(
+            cliente_id=cliente.id,
+            tipo=TipoInteraccion.VENTA,
+            cantidad=cantidad_vendida,
+            precio_unitario=Decimal(str(precio_venta)),
+            monto_usd=Decimal(str(monto)),
+            fee=Decimal(str(fee)),
+            exchange=exchange,
+            notas=notas,
+            pnl_realizado=pnl_total
+        )
+        self.db.add(interaccion)
+
+        nueva_cantidad = cliente.cantidad_total - cantidad_vendida
+        cliente.cantidad_total = nueva_cantidad
+        cliente.pnl_total += pnl_total
+
+        if nueva_cantidad > 0:
+            lotes_restantes = self.db.query(LoteCompra).filter(
+                LoteCompra.cliente_id == cliente.id,
+                LoteCompra.cantidad_restante > 0
+            ).all()
+            inversion_restante = sum(float(l.cantidad_restante) * float(l.precio_unitario) for l in lotes_restantes)
+            cliente.costo_promedio = Decimal(str(inversion_restante / float(nueva_cantidad))) if nueva_cantidad > 0 else Decimal("0")
+        else:
+            cliente.costo_promedio = Decimal("0")
+
+        self.db.commit()
+        self.actualizar_estado_cliente(symbol)
+
+        return {
+            "interaccion": interaccion,
+            "pnl_total": float(pnl_total),
+            "detalle_lotes": detalles_consumo
+        }
+
+    def registrar_interaccion_general(self, symbol: str, tipo: str, cantidad: float, precio: float,
+                                      fee: float = 0.0, exchange: str = "binance", notas: str = ""):
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no existe")
+        interaccion = Interaccion(
+            cliente_id=cliente.id,
+            tipo=TipoInteraccion(tipo),
+            cantidad=Decimal(str(cantidad)),
+            precio_unitario=Decimal(str(precio)),
+            monto_usd=Decimal(str(cantidad * precio)),
+            fee=Decimal(str(fee)),
+            exchange=exchange,
+            notas=notas
+        )
+        self.db.add(interaccion)
+        if tipo in ["staking", "airdrop", "dividendo"]:
+            cliente.cantidad_total += Decimal(str(cantidad))
+        self.db.commit()
+        return {"interaccion": interaccion}
+
+    def registrar_interaccion(self, symbol: str, tipo: str, cantidad: float, precio: float,
+                              fee: float = 0.0, exchange: str = "binance", notas: str = ""):
+        return self.registrar_interaccion_general(symbol, tipo, cantidad, precio, fee, exchange, notas)
+
+    def eliminar_interaccion(self, interaccion_id: int) -> Dict[str, Any]:
+        interaccion = self.db.query(Interaccion).filter_by(id=interaccion_id).first()
+        if not interaccion:
+            raise ValueError("Interacción no encontrada")
+
+        cliente = interaccion.cliente
+        symbol = cliente.symbol
+        tipo_eliminado = interaccion.tipo.value
+        cantidad_eliminada = float(interaccion.cantidad)
+
+        self.db.delete(interaccion)
+        self.db.commit()
+
+        self.recalcular_cliente_desde_cero(symbol)
+
+        return {
+            "mensaje": f"Interacción {interaccion_id} de tipo {tipo_eliminado} eliminada",
+            "cliente": symbol,
+            "cantidad_afectada": cantidad_eliminada
+        }
+
+    def recalcular_cliente_desde_cero(self, symbol: str):
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no encontrado")
+
+        self.db.query(LoteCompra).filter(LoteCompra.cliente_id == cliente.id).delete()
+        self.db.commit()
+
+        cliente.cantidad_total = Decimal("0")
+        cliente.costo_promedio = Decimal("0")
+        cliente.inversion_total = Decimal("0")
+        cliente.pnl_total = Decimal("0")
+        cliente.valor_mercado = Decimal("0")
+        cliente.roi_porcentaje = Decimal("0")
+        self.db.commit()
+
+        interacciones = self.db.query(Interaccion).filter(
+            Interaccion.cliente_id == cliente.id
+        ).order_by(Interaccion.timestamp.asc()).all()
+
+        for inter in interacciones:
+            tipo = inter.tipo.value
+            cantidad = float(inter.cantidad)
+            precio = float(inter.precio_unitario)
+            fee = float(inter.fee)
+
+            if tipo == "compra":
+                costo_total = cantidad * precio + fee
+                precio_con_fee = costo_total / cantidad
+
+                lote = LoteCompra(
+                    cliente_id=cliente.id,
+                    cantidad=Decimal(str(cantidad)),
+                    cantidad_restante=Decimal(str(cantidad)),
+                    precio_unitario=Decimal(str(precio_con_fee)),
+                    exchange=inter.exchange,
+                    notas=inter.notas
+                )
+                self.db.add(lote)
+
+                total_previo = float(cliente.cantidad_total) * float(cliente.costo_promedio)
+                nueva_cantidad = float(cliente.cantidad_total) + cantidad
+                if nueva_cantidad > 0:
+                    cliente.costo_promedio = Decimal(str((total_previo + costo_total) / nueva_cantidad))
+                cliente.cantidad_total = Decimal(str(nueva_cantidad))
+                cliente.inversion_total += Decimal(str(costo_total))
+
+            elif tipo == "venta":
+                cantidad_vender = Decimal(str(cantidad))
+                lotes = self.db.query(LoteCompra).filter(
+                    LoteCompra.cliente_id == cliente.id,
+                    LoteCompra.cantidad_restante > 0
+                ).order_by(LoteCompra.fecha_compra.asc()).all()
+
+                cantidad_a_vender = cantidad_vender
+                pnl_total = Decimal("0")
+
+                for lote in lotes:
+                    if cantidad_a_vender <= 0:
+                        break
+                    disponible = lote.cantidad_restante
+                    a_consumir = min(disponible, cantidad_a_vender)
+
+                    pnl_lote = (Decimal(str(precio)) - lote.precio_unitario) * a_consumir
+                    pnl_total += pnl_lote
+
+                    lote.cantidad_restante -= a_consumir
+                    cantidad_a_vender -= a_consumir
+
+                pnl_total -= Decimal(str(fee))
+                cantidad_vendida = cantidad_vender - cantidad_a_vender
+
+                nueva_cantidad = float(cliente.cantidad_total) - float(cantidad_vendida)
+                cliente.cantidad_total = Decimal(str(nueva_cantidad))
+                cliente.pnl_total += pnl_total
+
+                if nueva_cantidad > 0:
+                    lotes_restantes = self.db.query(LoteCompra).filter(
+                        LoteCompra.cliente_id == cliente.id,
+                        LoteCompra.cantidad_restante > 0
+                    ).all()
+                    inversion_restante = sum(float(l.cantidad_restante) * float(l.precio_unitario) for l in lotes_restantes)
+                    cliente.costo_promedio = Decimal(str(inversion_restante / nueva_cantidad))
+                else:
+                    cliente.costo_promedio = Decimal("0")
+
+                inter.pnl_realizado = pnl_total
+
+            else:
+                if tipo in ["staking", "airdrop", "dividendo"]:
+                    cliente.cantidad_total += Decimal(str(cantidad))
+
+        if float(cliente.cantidad_total) > 0:
+            precio_actual = float(cliente.precio_actual) if cliente.precio_actual else 0
+            cliente.valor_mercado = Decimal(str(precio_actual * float(cliente.cantidad_total)))
+            inversion_total = float(cliente.inversion_total)
+            if inversion_total > 0:
+                cliente.pnl_total = cliente.valor_mercado - Decimal(str(inversion_total))
+                cliente.roi_porcentaje = (cliente.pnl_total / Decimal(str(inversion_total))) * 100
+
+        self.db.commit()
+        self.actualizar_estado_cliente(symbol)
+
+    def historial_interacciones(self, symbol: str) -> List[Interaccion]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return []
+        return self.db.query(Interaccion).filter_by(cliente_id=cliente.id)\
+                   .order_by(Interaccion.timestamp.desc()).all()
+
+    def obtener_lotes_cliente(self, symbol: str) -> List[LoteCompra]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return []
+        return self.db.query(LoteCompra).filter_by(cliente_id=cliente.id)\
+                   .order_by(LoteCompra.fecha_compra.asc()).all()
+
+    def obtener_todos_lotes_con_clientes(self) -> Dict[str, List[LoteCompra]]:
+        lotes = self.db.query(LoteCompra).join(ClienteCripto).filter(LoteCompra.cantidad_restante > 0).all()
+        resultado = {}
+        for lote in lotes:
+            symbol = lote.cliente.symbol
+            if symbol not in resultado:
+                resultado[symbol] = []
+            resultado[symbol].append(lote)
+        return resultado
+
+    def calcular_pnl_fifo_para_cliente(self, symbol: str, precio_actual: float) -> Dict[str, Any]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return {"error": "Cliente no encontrado"}
+        lotes = self.db.query(LoteCompra).filter(
+            LoteCompra.cliente_id == cliente.id,
+            LoteCompra.cantidad_restante > 0
+        ).order_by(LoteCompra.fecha_compra.asc()).all()
+        
+        cantidad_total = 0.0
+        costo_total = 0.0
+        for lote in lotes:
+            cant = float(lote.cantidad_restante)
+            cantidad_total += cant
+            costo_total += cant * float(lote.precio_unitario)
+        
+        valor_actual = cantidad_total * precio_actual
+        pnl = valor_actual - costo_total
+        return {
+            "pnl_total": pnl,
+            "costo_total": costo_total,
+            "valor_actual": valor_actual,
+            "cantidad_total": cantidad_total
+        }
+
+    # ═══════════════════════════════════════
+    # OPORTUNIDADES
+    # ═══════════════════════════════════════
+
+    def crear_oportunidad(self, symbol: str, tipo: str,
+                          entrada: float, objetivo: float, stop: float,
+                          monto_planificado: float = 0,
+                          confianza: int = 3, notas: str = "") -> Oportunidad:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no existe")
+
+        riesgo = abs(entrada - stop)
+        beneficio = abs(objetivo - entrada)
+        rb = beneficio / riesgo if riesgo > 0 else 0
+
+        tipo_enum = None
+        for enum_member in TipoOportunidad:
+            if enum_member.value == tipo or enum_member.name == tipo.upper():
+                tipo_enum = enum_member
+                break
+        if not tipo_enum:
+            raise ValueError(f"Tipo de oportunidad inválido: {tipo}. Debe ser uno de: {[e.value for e in TipoOportunidad]}")
+
+        opp = Oportunidad(
+            cliente_id=cliente.id,
+            tipo=tipo_enum,
+            precio_entrada=Decimal(str(entrada)),
+            precio_objetivo=Decimal(str(objetivo)),
+            precio_stop_loss=Decimal(str(stop)),
+            riesgo_beneficio=Decimal(str(round(rb, 2))),
+            monto_planificado=Decimal(str(monto_planificado)),
+            confianza=confianza,
+            notas_analisis=notas
+        )
+        self.db.add(opp)
+        self.db.commit()
+        self.db.refresh(opp)
+        return opp
+
+    def cerrar_oportunidad(self, opp_id: int, estado: str, pnl: float = None):
+        opp = self.db.query(Oportunidad).filter_by(id=opp_id).first()
+        if not opp:
+            raise ValueError("Oportunidad no encontrada")
+        opp.estado = estado
+        opp.fecha_ejecucion = datetime.utcnow()
+        if pnl is not None:
+            opp.resultado_pnl = Decimal(str(pnl))
+        self.db.commit()
+        return opp
+
+    def oportunidades_por_estado(self, estado: str = "abierta") -> List[Oportunidad]:
+        return self.db.query(Oportunidad).filter_by(estado=estado)\
+                   .order_by(Oportunidad.confianza.desc()).all()
+
+    def oportunidades_por_cliente(self, symbol: str) -> List[Oportunidad]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return []
+        return self.db.query(Oportunidad).filter_by(cliente_id=cliente.id)\
+                   .order_by(Oportunidad.fecha_creacion.desc()).all()
+
+    def oportunidades_por_estado_cliente(self, symbol: str, estado: str) -> List[Oportunidad]:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            return []
+        return self.db.query(Oportunidad).filter(
+            Oportunidad.cliente_id == cliente.id,
+            Oportunidad.estado == estado
+        ).order_by(Oportunidad.fecha_creacion.desc()).all()
+
+    def obtener_todas_oportunidades(self) -> List[Oportunidad]:
+        return self.db.query(Oportunidad).order_by(Oportunidad.fecha_creacion.desc()).all()
+
+    # ═══════════════════════════════════════
+    # TAREAS
+    # ═══════════════════════════════════════
+
+    def crear_tarea(self, symbol: str, tipo: str, descripcion: str,
+                    dias: int = 1, prioridad: int = 2) -> Tarea:
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no existe")
+
+        tarea = Tarea(
+            cliente_id=cliente.id,
+            tipo_tarea=tipo,
+            descripcion=descripcion,
+            fecha_limite=datetime.utcnow() + timedelta(days=dias),
+            prioridad=prioridad
+        )
+        self.db.add(tarea)
+        self.db.commit()
+        self.db.refresh(tarea)
+        return tarea
+
+    def completar_tarea(self, tarea_id: int) -> Tarea:
+        tarea = self.db.query(Tarea).filter_by(id=tarea_id).first()
+        if not tarea:
+            raise ValueError("Tarea no encontrada")
+        tarea.completada = True
+        tarea.fecha_completada = datetime.utcnow()
+        self.db.commit()
+        return tarea
+
+    def tareas_pendientes(self, urgentes: bool = False) -> List[Tarea]:
+        query = self.db.query(Tarea).filter(Tarea.completada == False)
+        if urgentes:
+            query = query.filter(Tarea.prioridad == 1)
+        return query.order_by(Tarea.fecha_limite.asc()).all()
+
+    def tareas_proximas(self, dias: int = 3) -> List[Tarea]:
+        limite = datetime.utcnow() + timedelta(days=dias)
+        return self.db.query(Tarea).filter(
+            Tarea.completada == False,
+            Tarea.fecha_limite <= limite
+        ).order_by(Tarea.fecha_limite).all()
+
+    def tareas_completadas(self, limit: int = 10) -> List[Tarea]:
+        return self.db.query(Tarea).filter(Tarea.completada == True)\
+            .order_by(Tarea.fecha_completada.desc()).limit(limit).all()
+
+    # ═══════════════════════════════════════
+    # ANALYTICS & REPORTES
+    # ═══════════════════════════════════════
+
+    def resumen_portafolio(self) -> dict:
+        clientes = self.db.query(ClienteCripto).all()
+        interacciones = self.db.query(Interaccion).count()
+        oportunidades_abiertas = self.db.query(Oportunidad).filter_by(estado="abierta").count()
+        tareas_pend = len(self.tareas_pendientes())
+
+        total_invertido = sum(float(c.inversion_total) for c in clientes)
+        total_valor = sum(float(c.valor_mercado) for c in clientes)
+        pnl_total = total_valor - total_invertido
+        roi = (pnl_total / total_invertido * 100) if total_invertido > 0 else 0
+
+        return {
+            "total_clientes": len(clientes),
+            "clientes_activos": len([c for c in clientes if float(c.cantidad_total) > 0]),
+            "clientes_vip": len([c for c in clientes if c.estado == EstadoCliente.VIP]),
+            "clientes_peligro": len([c for c in clientes if c.estado == EstadoCliente.ACTIVO_PELIGRO]),
+            "total_invertido": round(total_invertido, 2),
+            "total_valor_mercado": round(total_valor, 2),
+            "pnl_total": round(pnl_total, 2),
+            "roi_porcentaje": round(roi, 2),
+            "total_interacciones": interacciones,
+            "oportunidades_abiertas": oportunidades_abiertas,
+            "tareas_pendientes": tareas_pend
+        }
+
+    def top_performers(self, limit: int = 5) -> List[ClienteCripto]:
+        return self.db.query(ClienteCripto)\
+                   .filter(ClienteCripto.roi_porcentaje > 0)\
+                   .order_by(ClienteCripto.roi_porcentaje.desc())\
+                   .limit(limit).all()
+
+    def peores_performers(self, limit: int = 5) -> List[ClienteCripto]:
+        return self.db.query(ClienteCripto)\
+                   .filter(ClienteCripto.roi_porcentaje < 0)\
+                   .order_by(ClienteCripto.roi_porcentaje.asc())\
+                   .limit(limit).all()
+
+    def clientes_dormidos(self, dias: int = 30) -> List[ClienteCripto]:
+        limite = datetime.utcnow() - timedelta(days=dias)
+        return self.db.query(ClienteCripto).filter(
+            ClienteCripto.fecha_ultimo_contacto < limite,
+            ClienteCripto.cantidad_total > 0
+        ).all()
+
+================================================================================
+  FIN DE ARCHIVO: app/services/crm_service.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/services/analytics.py
+================================================================================
+from typing import Dict, List, Tuple
+from datetime import datetime, timedelta
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from decimal import Decimal
+
+from app.models import ClienteCripto, Interaccion, Oportunidad, Tarea, TipoInteraccion
+
+class AnalyticsService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def rendimiento_por_categoria(self) -> List[Dict]:
+        result = self.db.query(
+            ClienteCripto.categoria,
+            func.count(ClienteCripto.id).label('count'),
+            func.avg(ClienteCripto.roi_porcentaje).label('avg_roi'),
+            func.sum(ClienteCripto.pnl_total).label('total_pnl')
+        ).group_by(ClienteCripto.categoria).all()
+
+        return [
+            {
+                "categoria": r.categoria,
+                "monedas": r.count,
+                "roi_promedio": round(float(r.avg_roi or 0), 2),
+                "pnl_total": round(float(r.total_pnl or 0), 2)
+            }
+            for r in result
+        ]
+
+    def evolucion_pnl_mensual(self, meses: int = 6) -> List[Dict]:
+        desde = datetime.utcnow() - timedelta(days=meses*30)
+        result = self.db.query(
+            func.strftime('%Y-%m', Interaccion.timestamp).label('mes'),
+            func.sum(Interaccion.pnl_realizado).label('pnl')
+        ).filter(
+            Interaccion.timestamp >= desde,
+            Interaccion.tipo == TipoInteraccion.VENTA
+        ).group_by('mes').order_by('mes').all()
+
+        return [
+            {"mes": r.mes, "pnl_realizado": round(float(r.pnl or 0), 2)}
+            for r in result
+        ]
+
+    def metricas_oportunidades(self) -> Dict:
+        total = self.db.query(Oportunidad).count()
+        abiertas = self.db.query(Oportunidad).filter_by(estado="abierta").count()
+        ejecutadas = self.db.query(Oportunidad).filter_by(estado="ejecutada").count()
+        canceladas = self.db.query(Oportunidad).filter_by(estado="cancelada").count()
+        pnl_opps = self.db.query(func.sum(Oportunidad.resultado_pnl)).filter(
+            Oportunidad.estado == "ejecutada"
+        ).scalar()
+        avg_rr = self.db.query(func.avg(Oportunidad.riesgo_beneficio)).filter(
+            Oportunidad.estado == "ejecutada"
+        ).scalar()
+
+        return {
+            "total_oportunidades": total,
+            "abiertas": abiertas,
+            "ejecutadas": ejecutadas,
+            "canceladas": canceladas,
+            "tasa_ejecucion": round(ejecutadas / total * 100, 1) if total > 0 else 0,
+            "pnl_total_oportunidades": round(float(pnl_opps or 0), 2),
+            "riesgo_beneficio_promedio": round(float(avg_rr or 0), 2)
+        }
+
+    def eficiencia_tareas(self, dias: int = 30) -> Dict:
+        desde = datetime.utcnow() - timedelta(days=dias)
+        total = self.db.query(Tarea).filter(Tarea.fecha_creacion >= desde).count()
+        completadas = self.db.query(Tarea).filter(
+            Tarea.completada == True,
+            Tarea.fecha_creacion >= desde
+        ).count()
+        return {
+            "tareas_creadas": total,
+            "tareas_completadas": completadas,
+            "tasa_completitud": round(completadas / total * 100, 1) if total > 0 else 0,
+            "periodo_dias": dias
+        }
+
+    def distribucion_portafolio(self) -> List[Dict]:
+        clientes = self.db.query(ClienteCripto).filter(
+            ClienteCripto.cantidad_total > 0
+        ).all()
+        total_valor = sum(float(c.valor_mercado) for c in clientes)
+        return [
+            {
+                "symbol": c.symbol,
+                "valor": round(float(c.valor_mercado), 2),
+                "porcentaje": round(float(c.valor_mercado) / total_valor * 100, 2) if total_valor > 0 else 0,
+                "roi": round(float(c.roi_porcentaje), 2)
+            }
+            for c in sorted(clientes, key=lambda x: float(x.valor_mercado), reverse=True)
+        ]
+
+    def alertas_inteligentes(self) -> List[Dict]:
+        alertas = []
+        peligro = self.db.query(ClienteCripto).filter(
+            ClienteCripto.roi_porcentaje < -20,
+            ClienteCripto.cantidad_total > 0
+        ).all()
+        for c in peligro:
+            alertas.append({
+                "nivel": "CRITICO",
+                "tipo": "perdida_excesiva",
+                "symbol": c.symbol,
+                "mensaje": f"{c.symbol} con perdida del {float(c.roi_porcentaje):.1f}%. Considerar stop o promediar.",
+                "accion_sugerida": "revisar_stop_loss"
+            })
+        vip = self.db.query(ClienteCripto).filter(
+            ClienteCripto.roi_porcentaje > 50,
+            ClienteCripto.cantidad_total > 0
+        ).all()
+        for c in vip:
+            alertas.append({
+                "nivel": "INFO",
+                "tipo": "take_profit_sugerido",
+                "symbol": c.symbol,
+                "mensaje": f"{c.symbol} ganando {float(c.roi_porcentaje):.1f}%. Considerar venta parcial.",
+                "accion_sugerida": "vender_50_porciento"
+            })
+        dist = self.distribucion_portafolio()
+        if dist:
+            max_pos = dist[0]
+            if max_pos["porcentaje"] > 30:
+                alertas.append({
+                    "nivel": "ADVERTENCIA",
+                    "tipo": "concentracion_alta",
+                    "symbol": max_pos["symbol"],
+                    "mensaje": f"{max_pos['symbol']} representa {max_pos['porcentaje']}% del portafolio. Diversificar.",
+                    "accion_sugerida": "rebalancear"
+                })
+        desde = datetime.utcnow() - timedelta(days=30)
+        dormidos = self.db.query(ClienteCripto).filter(
+            ClienteCripto.fecha_ultimo_contacto < desde,
+            ClienteCripto.cantidad_total > 0
+        ).all()
+        for c in dormidos:
+            alertas.append({
+                "nivel": "BAJO",
+                "tipo": "cliente_dormido",
+                "symbol": c.symbol,
+                "mensaje": f"{c.symbol} sin movimiento en 30+ dias. Revisar si mantener.",
+                "accion_sugerida": "revision_estrategia"
+            })
+        return alertas
+
+    def daily_pnl(self, days: int = 7) -> List[Dict]:
+        start_date = datetime.utcnow() - timedelta(days=days)
+        results = self.db.query(
+            func.date(Interaccion.timestamp).label('date'),
+            func.sum(Interaccion.pnl_realizado).label('total_pnl')
+        ).filter(
+            Interaccion.tipo == TipoInteraccion.VENTA,
+            Interaccion.timestamp >= start_date
+        ).group_by(func.date(Interaccion.timestamp)).order_by(func.date(Interaccion.timestamp)).all()
+        
+        daily_data = {}
+        for r in results:
+            daily_data[r.date] = float(r.total_pnl)
+        
+        today = datetime.utcnow().date()
+        pnl_list = []
+        for i in range(days - 1, -1, -1):
+            date = today - timedelta(days=i)
+            date_str = date.strftime("%Y-%m-%d")
+            pnl = daily_data.get(date_str, 0.0)
+            pnl_list.append({
+                "date": date_str,
+                "pnl": pnl
+            })
+        return pnl_list
+
+    def ganancias_perdidas_realizadas(self) -> dict:
+        ganancias = self.db.query(func.sum(Interaccion.pnl_realizado)).filter(
+            Interaccion.tipo == TipoInteraccion.VENTA,
+            Interaccion.pnl_realizado > 0
+        ).scalar() or 0.0
+        
+        perdidas = self.db.query(func.sum(Interaccion.pnl_realizado)).filter(
+            Interaccion.tipo == TipoInteraccion.VENTA,
+            Interaccion.pnl_realizado < 0
+        ).scalar() or 0.0
+        
+        return {
+            "ganancias_realizadas": float(ganancias),
+            "perdidas_realizadas": abs(float(perdidas)),
+            "neto_realizado": float(ganancias) - abs(float(perdidas))
+        }
+
+================================================================================
+  FIN DE ARCHIVO: app/services/analytics.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/services/exchange_sync.py
+================================================================================
+from typing import Dict, List, Optional
+import ccxt
+from decimal import Decimal
+from datetime import datetime
+from app.models import ClienteCripto, TipoInteraccion
+from app.services.crm_service import CRMService
+
+class ExchangeConnector:
+    def __init__(self, api_key: str = None, secret: str = None, exchange_id: str = "binance"):
+        exchange_class = getattr(ccxt, exchange_id)
+        config = {
+            'enableRateLimit': True,
+            'options': {'defaultType': 'spot'}
+        }
+        if api_key and secret:
+            config['apiKey'] = api_key
+            config['secret'] = secret
+        self.exchange = exchange_class(config)
+        self.is_authenticated = bool(api_key and secret)
+
+    def obtener_precio(self, symbol: str, vs_currency: str = "USDT") -> float:
+        try:
+            ticker = self.exchange.fetch_ticker(f"{symbol}/{vs_currency}")
+            return ticker['last'] or ticker['close'] or 0.0
+        except Exception as e:
+            print(f"Error obteniendo precio de {symbol}: {e}")
+            return 0.0
+
+    def obtener_ticker(self, symbol: str, vs_currency: str = "USDT") -> Dict:
+        try:
+            ticker = self.exchange.fetch_ticker(f"{symbol}/{vs_currency}")
+            return {
+                "symbol": symbol,
+                "last": ticker.get('last', 0),
+                "bid": ticker.get('bid', 0),
+                "ask": ticker.get('ask', 0),
+                "change": ticker.get('change', 0),
+                "percentage": ticker.get('percentage', 0),
+                "volume": ticker.get('baseVolume', 0),
+                "quoteVolume": ticker.get('quoteVolume', 0),
+                "high": ticker.get('high', 0),
+                "low": ticker.get('low', 0),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        except Exception as e:
+            print(f"Error obteniendo ticker de {symbol}: {e}")
+            return {}
+
+    def obtener_velas(self, symbol: str, timeframe: str = "1h", limit: int = 100, vs_currency: str = "USDT") -> List[Dict]:
+        try:
+            ohlcv = self.exchange.fetch_ohlcv(f"{symbol}/{vs_currency}", timeframe=timeframe, limit=limit)
+            velas = []
+            for candle in ohlcv:
+                velas.append({
+                    "timestamp": candle[0],
+                    "datetime": datetime.utcfromtimestamp(candle[0] / 1000).isoformat(),
+                    "open": candle[1],
+                    "high": candle[2],
+                    "low": candle[3],
+                    "close": candle[4],
+                    "volume": candle[5]
+                })
+            return velas
+        except Exception as e:
+            print(f"Error obteniendo velas de {symbol}: {e}")
+            return []
+
+    def obtener_balance(self) -> Dict[str, float]:
+        if not self.is_authenticated:
+            raise ValueError("Se requiere API key y secret para obtener balance.")
+        balance = self.exchange.fetch_balance()
+        return {
+            k: float(v['total']) 
+            for k, v in balance.items() 
+            if isinstance(v, dict) and float(v.get('total', 0)) > 0
+        }
+
+    def obtener_historial_trades(self, symbol: str, limit: int = 100) -> List[dict]:
+        if not self.is_authenticated:
+            raise ValueError("Se requiere API key y secret para obtener historial de trades.")
+        try:
+            trades = self.exchange.fetch_my_trades(f"{symbol}/USDT", limit=limit)
+            return trades
+        except Exception as e:
+            print(f"Error obteniendo trades de {symbol}: {e}")
+            return []
+
+    def sincronizar_portafolio(self, crm: CRMService):
+        if not self.is_authenticated:
+            print("No autenticado. No se puede sincronizar portafolio.")
+            return False
+        balance = self.obtener_balance()
+        for symbol, cantidad in balance.items():
+            if symbol in ['USDT', 'USDC', 'BUSD', 'FDUSD']:
+                continue
+            if cantidad <= 0:
+                continue
+            precio = self.obtener_precio(symbol)
+            if precio == 0:
+                continue
+            cliente = crm.obtener_cliente(symbol)
+            if not cliente:
+                cliente = crm.registrar_cliente(
+                    symbol=symbol,
+                    nombre=symbol,
+                    categoria="exchange_sync",
+                    exchange_principal=self.exchange.id,
+                    cantidad_total=Decimal(str(cantidad))
+                )
+                print(f"[SYNC] Nuevo cliente registrado: {symbol}")
+            crm.actualizar_precio_mercado(symbol, precio)
+            if not cliente.interacciones:
+                crm.crear_tarea(
+                    symbol=symbol,
+                    tipo="revision_inicial",
+                    descripcion=f"{symbol} sincronizado desde exchange. Revisar costo promedio manualmente.",
+                    dias=1,
+                    prioridad=3
+                )
+        return True
+
+    def importar_historial(self, crm: CRMService, symbol: str):
+        if not self.is_authenticated:
+            raise ValueError("Se requiere autenticación para importar historial.")
+        trades = self.obtener_historial_trades(symbol)
+        for trade in trades:
+            lado = trade.get('side', 'buy')
+            tipo = TipoInteraccion.COMPRA if lado == 'buy' else TipoInteraccion.VENTA
+            try:
+                crm.registrar_interaccion(
+                    symbol=symbol.replace('/USDT', ''),
+                    tipo=tipo.value,
+                    cantidad=trade['amount'],
+                    precio=trade['price'],
+                    fee=trade.get('fee', {}).get('cost', 0),
+                    exchange=self.exchange.id,
+                    notas=f"Importado desde exchange - Order: {trade.get('order', 'N/A')}"
+                )
+            except ValueError:
+                pass
+        return len(trades)
+
+================================================================================
+  FIN DE ARCHIVO: app/services/exchange_sync.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/services/notification_service.py
+================================================================================
+from sqlalchemy.orm import Session
+from datetime import datetime, timedelta
+from typing import List, Dict, Any
+from decimal import Decimal
+
+from app.models import Notification, ClienteCripto, Oportunidad, Tarea
+from app.services.crm_service import CRMService
+from app.services.exchange_sync import ExchangeConnector
+
+class NotificationService:
+    def __init__(self, db: Session):
+        self.db = db
+        self.connector = ExchangeConnector()
+        self.crm = CRMService(db)
+
+    def create_notification(self, message: str, notif_type: str, related_id: int = None) -> Notification:
+        notif = Notification(
+            message=message,
+            type=notif_type,
+            related_id=related_id,
+            is_read=False
+        )
+        self.db.add(notif)
+        self.db.commit()
+        self.db.refresh(notif)
+        return notif
+
+    def get_unread_notifications(self, limit: int = 20) -> List[Notification]:
+        return self.db.query(Notification).filter(Notification.is_read == False)\
+            .order_by(Notification.created_at.desc()).limit(limit).all()
+
+    def get_recent_notifications(self, limit: int = 20) -> List[Notification]:
+        return self.db.query(Notification).order_by(Notification.created_at.desc()).limit(limit).all()
+
+    def mark_as_read(self, notif_id: int) -> bool:
+        notif = self.db.query(Notification).filter_by(id=notif_id).first()
+        if notif:
+            notif.is_read = True
+            self.db.commit()
+            return True
+        return False
+
+    def mark_all_as_read(self):
+        self.db.query(Notification).update({Notification.is_read: True})
+        self.db.commit()
+
+    def check_price_alerts(self) -> int:
+        clientes = self.db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
+        alerts_count = 0
+        for cliente in clientes:
+            precio_actual = self.connector.obtener_precio(cliente.symbol)
+            if precio_actual == 0:
+                continue
+            precio_anterior = float(cliente.precio_actual)
+            if precio_anterior == 0:
+                self.crm.actualizar_precio_mercado(cliente.symbol, precio_actual)
+                continue
+            cambio = abs((precio_actual - precio_anterior) / precio_anterior) * 100
+            if cambio >= 5:
+                direccion = "subido" if precio_actual > precio_anterior else "bajado"
+                message = f"💰 {cliente.symbol} ha {direccion} un {cambio:.1f}% (${precio_anterior:.2f} → ${precio_actual:.2f})"
+                self.create_notification(message, "price_alert", cliente.id)
+                alerts_count += 1
+            self.crm.actualizar_precio_mercado(cliente.symbol, precio_actual)
+        return alerts_count
+
+    def check_market_trend_change(self) -> int:
+        ticker = self.connector.obtener_ticker("BTC")
+        change_24h = ticker.get("percentage", 0.0)
+        if change_24h > 1:
+            current_trend = "alcista"
+        elif change_24h < -1:
+            current_trend = "bajista"
+        else:
+            current_trend = "neutral"
+        last_trend_notif = self.db.query(Notification).filter(Notification.type == "trend_change")\
+            .order_by(Notification.created_at.desc()).first()
+        last_trend = "neutral"
+        if last_trend_notif:
+            last_trend = "alcista" if "alcista" in last_trend_notif.message else "bajista" if "bajista" in last_trend_notif.message else "neutral"
+        if current_trend != last_trend:
+            message = f"📈 Cambio de tendencia del mercado: BTC ahora en tendencia {current_trend.upper()} (cambio 24h: {change_24h:.1f}%)"
+            self.create_notification(message, "trend_change")
+            return 1
+        return 0
+
+    def check_opportunities_alerts(self) -> int:
+        oportunidades = self.db.query(Oportunidad).filter(Oportunidad.estado == "abierta").all()
+        alerts_count = 0
+        for opp in oportunidades:
+            cliente = opp.cliente
+            if not cliente:
+                continue
+            precio_actual = float(cliente.precio_actual)
+            precio_objetivo = float(opp.precio_objetivo)
+            precio_stop = float(opp.precio_stop_loss)
+            if precio_actual >= precio_objetivo:
+                message = f"🎯 ¡Objetivo alcanzado! {cliente.symbol} llegó a ${precio_actual:.2f} (objetivo: ${precio_objetivo:.2f})"
+                self.create_notification(message, "opportunity_alert", opp.id)
+                alerts_count += 1
+            elif precio_actual <= precio_stop:
+                message = f"🛑 Stop loss activado en {cliente.symbol} (precio: ${precio_actual:.2f}, stop: ${precio_stop:.2f})"
+                self.create_notification(message, "opportunity_alert", opp.id)
+                alerts_count += 1
+        return alerts_count
+
+    def check_task_reminders(self) -> int:
+        ahora = datetime.utcnow()
+        limite = ahora + timedelta(days=1)
+        tareas = self.db.query(Tarea).filter(
+            Tarea.completada == False,
+            Tarea.fecha_limite <= limite,
+            Tarea.fecha_limite > ahora
+        ).all()
+        alerts_count = 0
+        for tarea in tareas:
+            cliente = tarea.cliente
+            message = f"⏰ Recordatorio: La tarea '{tarea.tipo_tarea}' para {cliente.symbol} vence en {(tarea.fecha_limite - ahora).seconds // 3600} horas."
+            self.create_notification(message, "task_reminder", tarea.id)
+            alerts_count += 1
+        return alerts_count
+
+    def generate_all_alerts(self) -> Dict[str, int]:
+        return {
+            "price_alerts": self.check_price_alerts(),
+            "trend_change": self.check_market_trend_change(),
+            "opportunity_alerts": self.check_opportunities_alerts(),
+            "task_reminders": self.check_task_reminders()
+        }
+
+================================================================================
+  FIN DE ARCHIVO: app/services/notification_service.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/services/binance_events.py
+================================================================================
+import requests
+import xml.etree.ElementTree as ET
+from datetime import datetime
+from typing import List, Dict, Any
+from sqlalchemy.orm import Session
+from app.models import BinanceEvent
+
+class BinanceEventScraper:
+    RSS_URL = "https://www.binance.com/en/support/announcement/rss?c=48"
+    
+    @staticmethod
+    def fetch_events() -> List[Dict[str, Any]]:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
+        events = []
+        try:
+            resp = requests.get(BinanceEventScraper.RSS_URL, headers=headers, timeout=15)
+            if resp.status_code in (200, 202):
+                content = resp.content
+                try:
+                    root = ET.fromstring(content)
+                    ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                    entries = root.findall('.//atom:entry', ns)
+                    for entry in entries:
+                        title_elem = entry.find('atom:title', ns)
+                        link_elem = entry.find('atom:link', ns)
+                        date_elem = entry.find('atom:updated', ns)
+                        if title_elem is not None and link_elem is not None:
+                            title = title_elem.text
+                            link = link_elem.get('href')
+                            if link and not link.startswith('http'):
+                                link = "https://www.binance.com" + link
+                            event_date = None
+                            if date_elem is not None and date_elem.text:
+                                try:
+                                    date_str = date_elem.text.replace('Z', '+00:00')
+                                    event_date = datetime.fromisoformat(date_str)
+                                except:
+                                    pass
+                            event_type = "announcement"
+                            title_lower = title.lower()
+                            if "launchpool" in title_lower:
+                                event_type = "launchpool"
+                            elif "megadrop" in title_lower:
+                                event_type = "megadrop"
+                            elif "listing" in title_lower or "will list" in title_lower:
+                                event_type = "new_listing"
+                            events.append({
+                                "title": title,
+                                "description": "",
+                                "event_type": event_type,
+                                "url": link,
+                                "event_date": event_date
+                            })
+                    if events:
+                        return events[:20]
+                except ET.ParseError as e:
+                    print(f"[SCRAPER] Error parsing XML del feed RSS: {e}")
+            else:
+                print(f"[SCRAPER] Error HTTP {resp.status_code} al acceder al feed RSS de Binance.")
+        except Exception as e:
+            print(f"[SCRAPER] Excepción en feed RSS de Binance: {e}")
+        return []
+
+class BinanceEventService:
+    def __init__(self, db: Session):
+        self.db = db
+    
+    def update_events(self) -> int:
+        new_events = BinanceEventScraper.fetch_events()
+        saved_count = 0
+        for ev in new_events:
+            exists = self.db.query(BinanceEvent).filter(BinanceEvent.title == ev["title"]).first()
+            if not exists:
+                event = BinanceEvent(
+                    title=ev["title"],
+                    description=ev.get("description", ""),
+                    event_type=ev["event_type"],
+                    url=ev.get("url"),
+                    event_date=ev.get("event_date"),
+                    is_active=True
+                )
+                self.db.add(event)
+                saved_count += 1
+        self.db.commit()
+        return saved_count
+    
+    def get_active_events(self, limit: int = 20) -> List[BinanceEvent]:
+        return self.db.query(BinanceEvent).filter(BinanceEvent.is_active == True)\
+            .order_by(BinanceEvent.detected_at.desc()).limit(limit).all()
+    
+    def mark_event_inactive(self, event_id: int):
+        event = self.db.query(BinanceEvent).filter_by(id=event_id).first()
+        if event:
+            event.is_active = False
+            self.db.commit()
+
+================================================================================
+  FIN DE ARCHIVO: app/services/binance_events.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/services/p2p_service.py
+================================================================================
+import requests
+from typing import List, Dict, Any, Optional
+from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
+
+class P2PService:
+    P2P_URL = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
+    SUPPORTED_ASSETS = ["USDT", "BTC", "ETH", "BNB"]
+    SUPPORTED_FIATS = ["ARS", "MXN", "COP", "PEN", "CLP", "BRL", "VES", "USD"]
+    
+    @staticmethod
+    def get_orders(asset: str = "USDT", fiat: str = "ARS", trade_type: str = "BUY", rows: int = 20) -> List[Dict]:
+        if asset not in P2PService.SUPPORTED_ASSETS:
+            asset = "USDT"
+        if fiat not in P2PService.SUPPORTED_FIATS:
+            fiat = "ARS"
+        payload = {
+            "asset": asset,
+            "fiat": fiat,
+            "tradeType": trade_type,
+            "page": 1,
+            "rows": rows,
+            "payTypes": []
+        }
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        try:
+            resp = requests.post(P2PService.P2P_URL, json=payload, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("code") == "000000" and "data" in data:
+                    return data["data"]
+                else:
+                    logger.error(f"Error en respuesta P2P: {data}")
+                    return []
+            else:
+                logger.error(f"HTTP {resp.status_code} en P2P")
+                return []
+        except Exception as e:
+            logger.error(f"Excepción en P2P: {e}")
+            return []
+    
+    @staticmethod
+    def get_best_prices(asset: str = "USDT", fiat: str = "ARS") -> Dict[str, Any]:
+        sell_orders = P2PService.get_orders(asset, fiat, "SELL", rows=5)
+        buy_orders = P2PService.get_orders(asset, fiat, "BUY", rows=5)
+        best_buy_price = min([float(o["adv"]["price"]) for o in sell_orders]) if sell_orders else 0.0
+        best_sell_price = max([float(o["adv"]["price"]) for o in buy_orders]) if buy_orders else 0.0
+        spread_abs = best_sell_price - best_buy_price
+        spread_pct = (spread_abs / best_buy_price * 100) if best_buy_price > 0 else 0.0
+        return {
+            "asset": asset,
+            "fiat": fiat,
+            "buy_price": best_buy_price,
+            "sell_price": best_sell_price,
+            "spread_abs": round(spread_abs, 2),
+            "spread_pct": round(spread_pct, 2),
+            "buy_orders": buy_orders[:5],
+            "sell_orders": sell_orders[:5],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+================================================================================
+  FIN DE ARCHIVO: app/services/p2p_service.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/api/clientes.py
+================================================================================
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from decimal import Decimal
+
+from app.models import SessionLocal, EstadoCliente
+from app.schemas import ClienteCriptoCreate, ClienteCriptoUpdate, ClienteCriptoResponse
+from app.services.crm_service import CRMService
+from app.services.exchange_sync import ExchangeConnector
+
+router = APIRouter(prefix="/clientes", tags=["Clientes"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/", response_model=ClienteCriptoResponse)
+def crear_cliente(cliente: ClienteCriptoCreate, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        return crm.registrar_cliente(
+            symbol=cliente.symbol,
+            nombre=cliente.nombre,
+            categoria=cliente.categoria,
+            tags=cliente.tags,
+            notas_personal=cliente.notas_personal
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/", response_model=List[ClienteCriptoResponse])
+def listar_clientes(
+    estado: Optional[str] = None,
+    categoria: Optional[str] = None,
+    min_roi: Optional[float] = None,
+    db: Session = Depends(get_db)
+):
+    crm = CRMService(db)
+    return crm.listar_clientes(estado=estado, categoria=categoria, min_roi=min_roi)
+
+@router.get("/{symbol}", response_model=ClienteCriptoResponse)
+def obtener_cliente(symbol: str, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    cliente = crm.obtener_cliente(symbol)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return cliente
+
+@router.put("/{symbol}", response_model=ClienteCriptoResponse)
+def actualizar_cliente(symbol: str, update: ClienteCriptoUpdate, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    cliente = crm.obtener_cliente(symbol)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    update_data = update.dict(exclude_unset=True)
+    if 'estado' in update_data:
+        estado_str = update_data['estado'].upper()
+        try:
+            update_data['estado'] = EstadoCliente[estado_str]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"Estado inválido: {estado_str}. Opciones: {[e.name for e in EstadoCliente]}")
+    for field, value in update_data.items():
+        setattr(cliente, field, value)
+    cantidad = float(cliente.cantidad_total) if cliente.cantidad_total else 0
+    precio_actual = float(cliente.precio_actual) if cliente.precio_actual else 0
+    costo_promedio = float(cliente.costo_promedio) if cliente.costo_promedio else 0
+    if cantidad > 0:
+        cliente.valor_mercado = Decimal(str(cantidad * precio_actual))
+        inversion = cantidad * costo_promedio
+        cliente.inversion_total = Decimal(str(inversion))
+        cliente.pnl_total = cliente.valor_mercado - Decimal(str(inversion))
+        if inversion > 0:
+            cliente.roi_porcentaje = (cliente.pnl_total / Decimal(str(inversion))) * 100
+        else:
+            cliente.roi_porcentaje = Decimal("0")
+    else:
+        cliente.valor_mercado = Decimal("0")
+        cliente.inversion_total = Decimal("0")
+        cliente.pnl_total = Decimal("0")
+        cliente.roi_porcentaje = Decimal("0")
+    db.commit()
+    db.refresh(cliente)
+    crm.actualizar_estado_cliente(symbol)
+    return cliente
+
+@router.delete("/{symbol}")
+def eliminar_cliente(symbol: str, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    cliente = crm.obtener_cliente(symbol)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    db.delete(cliente)
+    db.commit()
+    return {"message": f"Cliente {symbol} eliminado"}
+
+@router.post("/{symbol}/actualizar-precio")
+def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    cliente = crm.obtener_cliente(symbol)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    if precio is None:
+        connector = ExchangeConnector()
+        precio = connector.obtener_precio(symbol)
+        if precio == 0:
+            raise HTTPException(status_code=400, detail=f"No se pudo obtener precio de {symbol} desde Binance")
+    cliente_actualizado = crm.actualizar_precio_mercado(symbol, precio)
+    return cliente_actualizado
+
+================================================================================
+  FIN DE ARCHIVO: app/api/clientes.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/api/interacciones.py
+================================================================================
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List
+
+from app.models import SessionLocal
+from app.schemas import InteraccionCreate, InteraccionResponse
+from app.services.crm_service import CRMService
+
+router = APIRouter(prefix="/interacciones", tags=["Interacciones"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def serializar_interaccion(interaccion):
+    return {
+        "id": interaccion.id,
+        "cliente_id": interaccion.cliente_id,
+        "tipo": interaccion.tipo.value if interaccion.tipo else None,
+        "cantidad": float(interaccion.cantidad),
+        "precio_unitario": float(interaccion.precio_unitario),
+        "monto_usd": float(interaccion.monto_usd),
+        "fee": float(interaccion.fee),
+        "exchange": interaccion.exchange,
+        "notas": interaccion.notas,
+        "timestamp": interaccion.timestamp.isoformat(),
+        "pnl_realizado": float(interaccion.pnl_realizado)
+    }
+
+def serializar_lote(lote):
+    return {
+        "id": lote.id,
+        "cliente_id": lote.cliente_id,
+        "cantidad": float(lote.cantidad),
+        "cantidad_restante": float(lote.cantidad_restante),
+        "precio_unitario": float(lote.precio_unitario),
+        "fecha_compra": lote.fecha_compra.isoformat(),
+        "exchange": lote.exchange,
+        "notas": lote.notas
+    }
+
+@router.post("/", response_model=dict)
+def crear_interaccion(interaccion: InteraccionCreate, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        if interaccion.tipo == "compra":
+            resultado = crm.registrar_compra(
+                symbol=interaccion.cliente_symbol,
+                cantidad=float(interaccion.cantidad),
+                precio=float(interaccion.precio_unitario),
+                fee=float(interaccion.fee),
+                exchange=interaccion.exchange,
+                notas=interaccion.notas
+            )
+            return {
+                "tipo": "compra",
+                "lote": serializar_lote(resultado["lote"]),
+                "interaccion": serializar_interaccion(resultado["interaccion"])
+            }
+        elif interaccion.tipo == "venta":
+            resultado = crm.registrar_venta_fifo(
+                symbol=interaccion.cliente_symbol,
+                cantidad_vender=float(interaccion.cantidad),
+                precio_venta=float(interaccion.precio_unitario),
+                fee=float(interaccion.fee),
+                exchange=interaccion.exchange,
+                notas=interaccion.notas
+            )
+            return {
+                "tipo": "venta",
+                "interaccion": serializar_interaccion(resultado["interaccion"]),
+                "pnl_total": resultado["pnl_total"],
+                "detalle_lotes": resultado["detalle_lotes"]
+            }
+        else:
+            resultado = crm.registrar_interaccion_general(
+                symbol=interaccion.cliente_symbol,
+                tipo=interaccion.tipo,
+                cantidad=float(interaccion.cantidad),
+                precio=float(interaccion.precio_unitario),
+                fee=float(interaccion.fee),
+                exchange=interaccion.exchange,
+                notas=interaccion.notas
+            )
+            return {
+                "tipo": interaccion.tipo,
+                "interaccion": serializar_interaccion(resultado["interaccion"])
+            }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/cliente/{symbol}", response_model=List[InteraccionResponse])
+def historial_cliente(symbol: str, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    return crm.historial_interacciones(symbol)
+
+@router.delete("/{interaccion_id}")
+def eliminar_interaccion(interaccion_id: int, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        resultado = crm.eliminar_interaccion(interaccion_id)
+        return resultado
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+================================================================================
+  FIN DE ARCHIVO: app/api/interacciones.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/api/oportunidades.py
+================================================================================
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from typing import List, Optional
+
+from app.models import SessionLocal
+from app.schemas import OportunidadCreate, OportunidadResponse
+from app.services.crm_service import CRMService
+
+router = APIRouter(prefix="/oportunidades", tags=["Oportunidades"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/", response_model=OportunidadResponse)
+def crear_oportunidad(opp: OportunidadCreate, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        return crm.crear_oportunidad(
+            symbol=opp.cliente_symbol,
+            tipo=opp.tipo,
+            entrada=float(opp.precio_entrada),
+            objetivo=float(opp.precio_objetivo),
+            stop=float(opp.precio_stop_loss),
+            monto_planificado=float(opp.monto_planificado),
+            confianza=opp.confianza,
+            notas=opp.notas_analisis
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/", response_model=List[OportunidadResponse])
+def listar_oportunidades(
+    estado: Optional[str] = Query(None, description="Filtrar por estado (abierta, ejecutada, cancelada)"),
+    cliente_symbol: Optional[str] = Query(None, description="Filtrar por símbolo del cliente"),
+    db: Session = Depends(get_db)
+):
+    crm = CRMService(db)
+    if cliente_symbol:
+        cliente = crm.obtener_cliente(cliente_symbol)
+        if not cliente:
+            raise HTTPException(status_code=404, detail="Cliente no encontrado")
+        if estado:
+            return crm.oportunidades_por_estado_cliente(cliente_symbol, estado)
+        else:
+            return crm.oportunidades_por_cliente(cliente_symbol)
+    if estado:
+        return crm.oportunidades_por_estado(estado)
+    else:
+        return crm.obtener_todas_oportunidades()
+
+@router.get("/cliente/{symbol}", response_model=List[OportunidadResponse])
+def oportunidades_por_cliente(symbol: str, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    cliente = crm.obtener_cliente(symbol)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return crm.oportunidades_por_cliente(symbol)
+
+@router.post("/{opp_id}/cerrar")
+def cerrar_oportunidad(opp_id: int, estado: str, pnl: Optional[float] = None, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        return crm.cerrar_oportunidad(opp_id, estado, pnl)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+================================================================================
+  FIN DE ARCHIVO: app/api/oportunidades.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/api/tareas.py
+================================================================================
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List
+
+from app.models import SessionLocal
+from app.schemas import TareaCreate, TareaResponse
+from app.services.crm_service import CRMService
+
+router = APIRouter(prefix="/tareas", tags=["Tareas"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/", response_model=TareaResponse)
+def crear_tarea(tarea: TareaCreate, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        return crm.crear_tarea(
+            symbol=tarea.cliente_symbol,
+            tipo=tarea.tipo_tarea,
+            descripcion=tarea.descripcion,
+            dias=3,
+            prioridad=tarea.prioridad
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/pendientes", response_model=List[TareaResponse])
+def tareas_pendientes(db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    return crm.tareas_pendientes()
+
+@router.get("/proximas", response_model=List[TareaResponse])
+def tareas_proximas(db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    return crm.tareas_proximas(dias=3)
+
+@router.get("/completadas", response_model=List[TareaResponse])
+def tareas_completadas(limit: int = 10, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    return crm.tareas_completadas(limit=limit)
+
+@router.post("/{tarea_id}/completar")
+def completar_tarea(tarea_id: int, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        return crm.completar_tarea(tarea_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+================================================================================
+  FIN DE ARCHIVO: app/api/tareas.py
+================================================================================
+
+================================================================================
+  ARCHIVO: app/api/lotes.py
+================================================================================
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List, Dict, Any
+
+from app.models import SessionLocal
+from app.schemas import LoteCompraResponse
+from app.services.crm_service import CRMService
+
+router = APIRouter(prefix="/lotes", tags=["Lotes"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.get("/cliente/{symbol}", response_model=List[LoteCompraResponse])
+def obtener_lotes_cliente(symbol: str, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    lotes = crm.obtener_lotes_cliente(symbol)
+    if lotes is None:
+        raise HTTPException(status_code=404, detail="Cliente no encontrado")
+    return lotes
+
+@router.get("/all")
+def obtener_todos_lotes(db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    lotes_por_cliente = crm.obtener_todos_lotes_con_clientes()
+    resultado = {}
+    for symbol, lotes in lotes_por_cliente.items():
+        resultado[symbol] = [
+            {
+                "id": l.id,
+                "cantidad": float(l.cantidad),
+                "cantidad_restante": float(l.cantidad_restante),
+                "precio_unitario": float(l.precio_unitario),
+                "fecha_compra": l.fecha_compra.isoformat(),
+                "exchange": l.exchange,
+                "notas": l.notas
+            }
+            for l in lotes
+        ]
+    return resultado
+
+================================================================================
+  FIN DE ARCHIVO: app/api/lotes.py
+================================================================================
+
+================================================================================
+  ARCHIVO: dashboard/streamlit_app.py
+================================================================================
+"""
+Dashboard visual del CRM Crypto usando Streamlit.
+Ejecuta: streamlit run dashboard/streamlit_app.py
+"""
+import streamlit as st
+import requests
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from noticias import mostrar_pagina_noticias
+from datetime import datetime, timedelta
+from p2p import mostrar_pagina_p2p
+from streamlit_autorefresh import st_autorefresh
+import time
+from scipy.stats import pearsonr
+import numpy as np
+
+API_URL = "http://localhost:8000"
+
+st.set_page_config(
+    page_title="Crypto CRM Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ═══════════════════════════════════════
+# FUNCIONES AUXILIARES
+# ═══════════════════════════════════════
+def fetch(endpoint):
+    try:
+        r = requests.get(f"{API_URL}{endpoint}")
+        return r.json()
+    except:
+        st.error("No se puede conectar a la API. Asegurate de que FastAPI este corriendo en puerto 8000")
+        return None
+
+def post(endpoint, data):
+    try:
+        r = requests.post(f"{API_URL}{endpoint}", json=data)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en POST: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en POST: {e}")
+        return None
+
+def put(endpoint, data):
+    try:
+        r = requests.put(f"{API_URL}{endpoint}", json=data)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en PUT: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en PUT: {e}")
+        return None
+
+def delete(endpoint):
+    try:
+        r = requests.delete(f"{API_URL}{endpoint}")
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code} en DELETE: {r.text[:200]}")
+            return None
+    except Exception as e:
+        st.error(f"Error en DELETE: {e}")
+        return None
+
+def obtener_precio_real(symbol):
+    try:
+        r = requests.get(f"{API_URL}/precios/{symbol}")
+        if r.status_code == 200:
+            return r.json().get("price", 0)
+    except:
+        pass
+    return 0
+
+def obtener_ticker_real(symbol):
+    try:
+        r = requests.get(f"{API_URL}/ticker/{symbol}")
+        if r.status_code == 200:
+            return r.json()
+    except:
+        pass
+    return {}
+
+def obtener_velas(symbol, timeframe="1h", limit=100):
+    try:
+        r = requests.get(f"{API_URL}/velas/{symbol}", params={"timeframe": timeframe, "limit": limit})
+        if r.status_code == 200:
+            return r.json().get("data", [])
+    except:
+        pass
+    return []
+
+# ═══════════════════════════════════════
+# FUNCIONES PARA ANÁLISIS TÉCNICO
+# ═══════════════════════════════════════
+def obtener_velas_binance(symbol, interval="1d", limit=30):
+    try:
+        pair = f"{symbol.upper()}USDT"
+        interval_map = {
+            "1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m",
+            "1h": "1h", "4h": "4h", "1d": "1d", "1w": "1w"
+        }
+        binance_interval = interval_map.get(interval, "1d")
+        url = f"https://api.binance.com/api/v3/klines?symbol={pair}&interval={binance_interval}&limit={limit}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            ohlcv = []
+            for candle in data:
+                ohlcv.append({
+                    "timestamp": candle[0],
+                    "datetime": datetime.fromtimestamp(candle[0]/1000).isoformat(),
+                    "open": float(candle[1]),
+                    "high": float(candle[2]),
+                    "low": float(candle[3]),
+                    "close": float(candle[4]),
+                    "volume": float(candle[5])
+                })
+            return ohlcv
+        else:
+            st.error(f"Error {r.status_code} de Binance: {r.text[:100]}")
+            return None
+    except Exception as e:
+        st.error(f"Error al conectar con Binance: {e}")
+        return None
+
+def encontrar_soportes_resistencias(velas, num_niveles=3):
+    highs = [v["high"] for v in velas]
+    lows = [v["low"] for v in velas]
+    n = len(velas)
+    window = max(2, min(5, n // 10))
+    soportes = []
+    resistencias = []
+    for i in range(window, n - window):
+        if all(lows[i] <= lows[i - j] for j in range(1, window+1)) and all(lows[i] <= lows[i + j] for j in range(1, window+1)):
+            soportes.append(lows[i])
+        if all(highs[i] >= highs[i - j] for j in range(1, window+1)) and all(highs[i] >= highs[i + j] for j in range(1, window+1)):
+            resistencias.append(highs[i])
+    soportes = sorted(list(set(soportes)), reverse=False)
+    resistencias = sorted(list(set(resistencias)), reverse=True)
+    precio_actual = velas[-1]["close"]
+    soportes_cercanos = [s for s in soportes if s < precio_actual][-num_niveles:]
+    if len(soportes_cercanos) < num_niveles and soportes:
+        soportes_cercanos = soportes[-num_niveles:] if len(soportes) >= num_niveles else soportes
+    resistencias_cercanas = [r for r in resistencias if r > precio_actual][:num_niveles]
+    if len(resistencias_cercanas) < num_niveles and resistencias:
+        resistencias_cercanas = resistencias[:num_niveles] if len(resistencias) >= num_niveles else resistencias
+    return soportes_cercanos[:num_niveles], resistencias_cercanas[:num_niveles]
+
+# ═══════════════════════════════════════
+# FUNCIONES PARA TENDENCIAS Y CORRELACIONES
+# ═══════════════════════════════════════
+@st.cache_data(ttl=3600)
+def obtener_simbolos_binance():
+    url = "https://api.binance.com/api/v3/exchangeInfo"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            symbols = [s["symbol"] for s in data["symbols"] if s["quoteAsset"] == "USDT"]
+            return symbols
+        else:
+            return []
+    except:
+        return []
+
+@st.cache_data(ttl=300)
+def obtener_tendencias_coingecko():
+    url = "https://api.coingecko.com/api/v3/search/trending"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if "coins" in data:
+                trending = []
+                for coin in data["coins"]:
+                    item = coin["item"]
+                    trending.append({
+                        "id": item.get("id", ""),
+                        "symbol": item.get("symbol", "").upper(),
+                        "name": item.get("name", ""),
+                        "score": item.get("score", 0),
+                        "market_cap_rank": item.get("market_cap_rank", 0),
+                        "thumb": item.get("thumb", "")
+                    })
+                return trending
+            else:
+                return None
+        else:
+            return None
+    except Exception as e:
+        st.error(f"Error conectando a CoinGecko: {e}")
+        return None
+
+@st.cache_data(ttl=300)
+def obtener_precio_actual_coingecko(coin_id):
+    url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
+    try:
+        r = requests.get(url, timeout=10)
+        if r.status_code == 200:
+            data = r.json()
+            if coin_id in data:
+                return {
+                    "price": data[coin_id].get("usd", 0),
+                    "change_24h": data[coin_id].get("usd_24h_change", 0)
+                }
+        return {"price": 0, "change_24h": 0}
+    except:
+        return {"price": 0, "change_24h": 0}
+
+@st.cache_data(ttl=3600)
+def obtener_historicos_coingecko(coin_id, days=7):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days={days}"
+    try:
+        r = requests.get(url, timeout=15)
+        if r.status_code == 200:
+            data = r.json()
+            prices = data.get("prices", [])
+            df = pd.DataFrame(prices, columns=["timestamp", "price"])
+            df["date"] = pd.to_datetime(df["timestamp"], unit='ms').dt.date
+            daily_prices = df.groupby("date")["price"].last().reset_index()
+            return daily_prices["price"].tolist()
+        else:
+            return []
+    except:
+        return []
+
+def calcular_correlacion_con_btc(token_prices, btc_prices):
+    if len(token_prices) < 2 or len(btc_prices) < 2:
+        return None
+    try:
+        corr, _ = pearsonr(token_prices, btc_prices)
+        return corr
+    except:
+        return None
+
+# Categorías actualizadas (Binance)
+CATEGORIAS = [
+    "BNB Chain", "Solana", "RWA", "MEME", "Pagos", "IA",
+    "Capa 1/Capa 2", "Fase semilla", "Launchpool", "New", "Megadrop",
+    "Juegos", "DeFi", "En observación", "Fan Token", "Infraestructura",
+    "Almacenamiento", "NFT", "Launchpad", "Yzi", "desconocida"
+]
+
+# ═══════════════════════════════════════
+# ESTILOS PERSONALIZADOS PARA EL SIDEBAR
+# ═══════════════════════════════════════
+st.markdown("""
+<style>
+    [data-testid="stSidebar"] {
+        background: linear-gradient(135deg, #1e2a3a 0%, #0f1724 100%);
+        border-right: 1px solid #2d3e50;
+    }
+    [data-testid="stSidebar"] .css-1d391kg {
+        color: #ffffff;
+        font-size: 1.8rem;
+        font-weight: bold;
+        text-align: center;
+        border-bottom: 2px solid #ffd700;
+        padding-bottom: 0.5rem;
+        margin-bottom: 1rem;
+    }
+    [data-testid="stSidebar"] .css-1wivap2 {
+        color: #b0c4de;
+        font-size: 0.9rem;
+        text-align: center;
+        margin-top: -0.5rem;
+        margin-bottom: 1.5rem;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label {
+        background-color: rgba(255,255,255,0.05);
+        border-radius: 12px;
+        padding: 8px 12px;
+        margin: 4px 0;
+        transition: all 0.2s ease;
+        color: #e0e0e0;
+        font-weight: 500;
+        font-size: 1rem;
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label:hover {
+        background-color: rgba(255,215,0,0.2);
+        color: #ffd700;
+        transform: translateX(5px);
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stMarkdownContainer"]:has(input:checked) {
+        background-color: #ffd700;
+        color: #0f1724;
+        font-weight: bold;
+        box-shadow: 0 2px 8px rgba(255,215,0,0.3);
+    }
+    [data-testid="stSidebar"] div[role="radiogroup"] input {
+        accent-color: #ffd700;
+    }
+    [data-testid="stSidebar"] .stCheckbox {
+        background: #2d3e50;
+        padding: 6px 12px;
+        border-radius: 20px;
+        margin: 10px 0;
+        color: white;
+    }
+    [data-testid="stSidebar"] .stSelectbox {
+        background: #2d3e50;
+        border-radius: 8px;
+    }
+    [data-testid="stSidebar"] .stAlert {
+        background: #2d3e50;
+        border-left: 4px solid #ffd700;
+        border-radius: 8px;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════
+# SIDEBAR
+# ═══════════════════════════════════════
+st.sidebar.title("🪙 Crypto CRM")
+st.sidebar.markdown("*Tratando criptomonedas como clientes*")
+
+st.sidebar.subheader("⚡ Actualización automática")
+auto_refresh = st.sidebar.checkbox("🔄 Activar actualización automática", value=False)
+if auto_refresh:
+    interval = st.sidebar.selectbox("⏱️ Intervalo (segundos)", [5, 10, 30, 60], index=1)
+    st_autorefresh(interval=interval * 1000, key="auto_refresh")
+else:
+    st.sidebar.info("Desactivado. Usa los botones 'Actualizar' en cada sección.")
+
+# ========== NOTIFICACIONES ==========
+try:
+    notificaciones = fetch("/notifications?unread_only=true&limit=10")
+    if notificaciones and isinstance(notificaciones, list):
+        unread_count = len(notificaciones)
+        for notif in notificaciones:
+            st.toast(notif["message"], icon="🔔")
+    else:
+        unread_count = 0
+except:
+    unread_count = 0
+
+col_bell, col_text = st.sidebar.columns([1, 3])
+with col_bell:
+    st.markdown(f"🔔", unsafe_allow_html=True)
+with col_text:
+    st.markdown(f"**Notificaciones** ({unread_count} nuevas)")
+
+if st.sidebar.button("📋 Ver notificaciones"):
+    with st.sidebar.expander("📢 Últimas notificaciones", expanded=True):
+        notifs = fetch("/notifications?limit=20")
+        if notifs:
+            for n in notifs:
+                st.markdown(f"- {n['created_at'][:16]} – {n['message']}")
+            if st.button("Marcar todas como leídas"):
+                requests.post(f"{API_URL}/notifications/read-all")
+                st.rerun()
+        else:
+            st.info("No hay notificaciones.")
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🧭 Navegación")
+
+page = st.sidebar.radio("Navegación", [
+    "🏠 Dashboard",
+    "👥 Clientes",
+    "💱 Interacciones",
+    "🎯 Oportunidades",
+    "✅ Tareas",
+    "📦 Lotes FIFO",
+    "📈 Analytics",
+    "📡 Mercado en Vivo",
+    "🔥 Tendencias de Mercado",
+    "📢 Eventos Binance",
+    "📈 Análisis y Trading",
+    "📰 Noticias",
+    "📊 P2P Binance",
+    "⚙️ Configuracion"
+], label_visibility="hidden")
+
+# ═══════════════════════════════════════
+# PÁGINA: DASHBOARD
+# ═══════════════════════════════════════
+if page == "🏠 Dashboard":
+    st.title("📊 Dashboard Principal")
+    
+    if st.button("🔄 Actualizar precios ahora (Binance)"):
+        with st.spinner("Actualizando precios de todos los clientes..."):
+            clientes = fetch("/clientes/")
+            if clientes:
+                for c in clientes:
+                    precio_real = obtener_precio_real(c["symbol"])
+                    if precio_real > 0:
+                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
+                st.success("Precios actualizados")
+                st.rerun()
+    
+    data = fetch("/dashboard/resumen")
+    if data:
+        resumen = data.get("resumen", {})
+        alertas = data.get("alertas", [])
+        distribucion = data.get("distribucion", [])
+        top = data.get("top_performers", [])
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Clientes Activos", resumen.get("clientes_activos", 0))
+        col2.metric("VIP", resumen.get("clientes_vip", 0))
+        col3.metric("En Peligro", resumen.get("clientes_peligro", 0))
+        col4.metric("PnL Total", f"${resumen.get('pnl_total', 0):,.2f}")
+        col5.metric("ROI", f"{resumen.get('roi_porcentaje', 0):.1f}%")
+
+        st.divider()
+        
+        st.subheader("📊 Oportunidad P2P en tiempo real")
+        
+        @st.cache_data(ttl=3600)
+        def obtener_top_20_criptos():
+            try:
+                url = "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=20&page=1&sparkline=false"
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200:
+                    data = r.json()
+                    return [coin["symbol"].upper() for coin in data]
+                else:
+                    return ["BTC", "ETH", "USDT", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "MATIC", "SHIB", "TRX", "AVAX", "UNI", "ATOM", "LTC", "NEAR", "ALGO", "ICP"]
+            except:
+                return ["BTC", "ETH", "USDT", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "MATIC", "SHIB", "TRX", "AVAX", "UNI", "ATOM", "LTC", "NEAR", "ALGO", "ICP"]
+        
+        top_20 = obtener_top_20_criptos()
+        
+        col_a, col_b, col_c = st.columns([2, 1, 2])
+        with col_a:
+            fiat_sel = st.selectbox("Moneda fiat", ["ARS", "MXN", "COP", "PEN", "CLP", "BRL", "VES", "USD"], index=0, key="p2p_fiat_dash")
+        with col_b:
+            asset_sel = st.selectbox("Cripto", top_20, index=0, key="p2p_asset_dash")
+        with col_c:
+            if st.button("🔄 Actualizar oportunidad P2P", key="p2p_refresh_dash"):
+                st.cache_data.clear()
+                st.rerun()
+
+        try:
+            r = requests.get(f"{API_URL}/p2p/best-prices", params={"asset": asset_sel, "fiat": fiat_sel}, timeout=5)
+            if r.status_code == 200:
+                p2p_data = r.json()
+                if p2p_data:
+                    buy_price = p2p_data.get("buy_price", 0)
+                    sell_price = p2p_data.get("sell_price", 0)
+                    spread = p2p_data.get("spread_pct", 0)
+                    tiene_datos = buy_price > 0 and sell_price > 0
+                    if tiene_datos:
+                        col1p, col2p, col3p = st.columns(3)
+                        with col1p:
+                            st.markdown(f"""
+                            <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; border-left: 4px solid #00ff88;">
+                                <h4 style="color: #00ff88; margin:0;">⬆ COMPRAR</h4>
+                                <p style="font-size: 1.5rem; color: white; margin:0;">${buy_price:.2f}</p>
+                                <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with col2p:
+                            st.markdown(f"""
+                            <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; text-align: center;">
+                                <h4 style="color: #ffd700; margin:0;">Spread</h4>
+                                <p style="font-size: 1.5rem; color: white; margin:0;">{spread:.2f}%</p>
+                                <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        with col3p:
+                            st.markdown(f"""
+                            <div style="background-color: #1e2a3a; padding: 15px; border-radius: 10px; border-left: 4px solid #ff4444;">
+                                <h4 style="color: #ff4444; margin:0;">⬇ VENDER</h4>
+                                <p style="font-size: 1.5rem; color: white; margin:0;">${sell_price:.2f}</p>
+                                <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                        st.divider()
+                        st.subheader("💡 Recomendación P2P")
+                        ganancia_por_unidad = sell_price - buy_price
+                        ganancia_pct = (ganancia_por_unidad / buy_price) * 100 if buy_price > 0 else 0
+                        if ganancia_pct > 1.0:
+                            color = "#00ff88"
+                            mensaje = f"✅ **Recomendado COMPRAR** a ${buy_price:.2f} y vender a ${sell_price:.2f} en spot/P2P."
+                            detalle = f"Ganancia potencial: ${ganancia_por_unidad:.2f} por unidad ({ganancia_pct:.2f}%)"
+                        elif ganancia_pct < -1.0:
+                            color = "#ff4444"
+                            mensaje = f"✅ **Recomendado VENDER** a ${sell_price:.2f} (actualmente está por encima del precio de compra)."
+                            detalle = f"Puedes vender ahora y recomprar cuando baje. Diferencia: ${abs(ganancia_por_unidad):.2f} por unidad ({abs(ganancia_pct):.2f}%)"
+                        else:
+                            color = "#ffd700"
+                            mensaje = f"⚠️ **Spread bajo ({ganancia_pct:.2f}%). No hay oportunidad clara.**"
+                            detalle = "Espera a que el spread supere el 1% para obtener una ganancia significativa."
+                        st.markdown(f"""
+                        <div style="background-color: #1e2a3a; padding: 20px; border-radius: 10px; border-left: 4px solid {color};">
+                            <h4 style="color: {color}; margin:0;">{mensaje}</h4>
+                            <p style="color: #b0c4de; margin:5px 0 0 0;">{detalle}</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        col_r1, col_r2, col_r3 = st.columns(3)
+                        col_r1.metric("Precio Compra", f"${buy_price:.2f}")
+                        col_r2.metric("Precio Venta", f"${sell_price:.2f}")
+                        col_r3.metric("Ganancia por unidad", f"${ganancia_por_unidad:.2f}", 
+                                      delta=f"{ganancia_pct:.2f}%" if abs(ganancia_pct) > 0 else None,
+                                      delta_color="normal" if ganancia_pct > 0 else "inverse")
+                    else:
+                        st.warning(f"⚠️ No hay anuncios activos para **{asset_sel}/{fiat_sel}** en este momento.")
+                        st.info("Prueba con otra moneda o fiat, o actualiza más tarde.")
+                else:
+                    st.warning("No se obtuvieron datos P2P.")
+            else:
+                st.warning("No se pudo conectar con el servicio P2P.")
+        except Exception as e:
+            st.warning(f"Error al obtener datos P2P: {e}")
+
+        st.divider()
+        
+        st.subheader("📊 Ganancias y Pérdidas Realizadas")
+        pnl_summary = fetch("/analytics/realized-pnl-summary")
+        if pnl_summary:
+            col_a, col_b, col_c = st.columns(3)
+            col_a.metric("💰 Ganancias Realizadas", f"${pnl_summary.get('ganancias_realizadas', 0):,.2f}")
+            col_b.metric("💸 Pérdidas Realizadas", f"${pnl_summary.get('perdidas_realizadas', 0):,.2f}", delta_color="inverse")
+            col_c.metric("📈 Neto Realizado", f"${pnl_summary.get('neto_realizado', 0):,.2f}",
+                         delta=f"${pnl_summary.get('neto_realizado', 0):,.2f}" if pnl_summary.get('neto_realizado') >= 0 else f"-${abs(pnl_summary.get('neto_realizado', 0)):,.2f}",
+                         delta_color="normal")
+        else:
+            st.info("No hay datos de ganancias/pérdidas realizadas todavía.")
+        
+        st.subheader("📈 Evolución de PnL Realizado (Últimos 7 días)")
+        daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
+        if daily_pnl_data:
+            df_pnl = pd.DataFrame(daily_pnl_data)
+            if not df_pnl.empty:
+                fig = go.Figure()
+                fig.add_trace(go.Bar(
+                    x=df_pnl["date"],
+                    y=df_pnl["pnl"],
+                    marker_color=['green' if val >= 0 else 'red' for val in df_pnl["pnl"]],
+                    text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
+                    textposition='auto'
+                ))
+                fig.update_layout(title="PnL Realizado por Día", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
+                st.plotly_chart(fig, width='stretch')
+            else:
+                st.info("No hay datos de PnL para los últimos 7 días.")
+        else:
+            st.info("No se pudieron cargar los datos de PnL diario.")
+
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.subheader("Distribucion del Portafolio")
+            if distribucion:
+                df_dist = pd.DataFrame(distribucion)
+                fig = px.pie(df_dist, values="porcentaje", names="symbol", hole=0.4, title="Por Valor de Mercado")
+                st.plotly_chart(fig, width='stretch')
+        with col_right:
+            st.subheader("Top Performers")
+            if top:
+                df_top = pd.DataFrame(top)
+                fig = px.bar(df_top, x="symbol", y="roi", color="roi", color_continuous_scale="RdYlGn", title="ROI por Moneda")
+                st.plotly_chart(fig, width='stretch')
+
+        st.subheader("🔔 Alertas Inteligentes")
+        if alertas:
+            for alerta in alertas:
+                nivel = alerta["nivel"]
+                color = {"CRITICO": "🔴", "ADVERTENCIA": "🟡", "INFO": "🟢", "BAJO": "🔵"}.get(nivel, "⚪")
+                with st.expander(f"{color} [{nivel}] {alerta['symbol']} - {alerta['tipo']}"):
+                    st.write(alerta["mensaje"])
+                    st.caption(f"Accion sugerida: {alerta['accion_sugerida']}")
+        else:
+            st.success("No hay alertas activas. Todo en orden! 🎉")
+
+# ═══════════════════════════════════════
+# PÁGINA: CLIENTES
+# ═══════════════════════════════════════
+elif page == "👥 Clientes":
+    st.title("👥 Gestion de Clientes (Criptomonedas)")
+    st.markdown("""
+    - **Costo Promedio (con fee)**: incluye comisiones prorrateadas (costo real).
+    - **Precio Promedio (sin fee)**: promedio de los precios de compra sin comisiones.
+    - **PnL FIFO Real**: calculado con FIFO y comisiones (ganancia/pérdida real).
+    - **PnL No Realizado (sin fee)**: basado en el precio promedio sin comisiones (lo que ves en el exchange).
+    - **Los precios se actualizan automáticamente con los datos de Binance cada hora, o manualmente con los botones de abajo.**
+    """)
+
+    if st.button("🔄 Actualizar todos los precios desde Binance"):
+        with st.spinner("Actualizando precios..."):
+            clientes_actualizar = fetch("/clientes/")
+            if clientes_actualizar:
+                for c in clientes_actualizar:
+                    precio_real = obtener_precio_real(c["symbol"])
+                    if precio_real > 0:
+                        resp = post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
+                        if not resp:
+                            st.error(f"Error actualizando {c['symbol']}")
+                    else:
+                        st.warning(f"No se pudo obtener precio para {c['symbol']}")
+                st.success("¡Precios actualizados correctamente!")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.error("No se pudieron obtener los clientes")
+
+    clientes = fetch("/clientes/")
+    if not clientes:
+        st.warning("No hay clientes registrados. Crea uno nuevo en la pestaña '➕ Nuevo Cliente'")
+        clientes = []
+
+    if clientes:
+        lotes_data = fetch("/lotes/all")
+        if not lotes_data:
+            lotes_data = {}
+
+        df_data = []
+        for c in clientes:
+            symbol = c["symbol"]
+            cantidad_total = float(c.get("cantidad_total", 0))
+            precio_actual = float(c.get("precio_actual", 0))
+            
+            interacciones = fetch(f"/interacciones/cliente/{symbol}")
+            compras = [i for i in interacciones if i.get("tipo") == "compra"] if interacciones else []
+            suma_cantidad = sum(float(i["cantidad"]) for i in compras) if compras else 0
+            suma_precio_cantidad = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in compras) if compras else 0
+            precio_promedio_sin_fee = suma_precio_cantidad / suma_cantidad if suma_cantidad > 0 else 0
+            
+            lotes_cliente = lotes_data.get(symbol, [])
+            cantidad_restante_fifo = 0.0
+            costo_total_fifo = 0.0
+            for lote in lotes_cliente:
+                cant = lote["cantidad_restante"]
+                cantidad_restante_fifo += cant
+                costo_total_fifo += cant * lote["precio_unitario"]
+            
+            valor_actual_fifo = cantidad_restante_fifo * precio_actual
+            pnl_no_realizado_fifo = valor_actual_fifo - costo_total_fifo
+            pnl_no_realizado_sin_fee = cantidad_total * (precio_actual - precio_promedio_sin_fee)
+            costo_prom_con_fee = float(c.get("costo_promedio", 0))
+
+            df_data.append({
+                "symbol": symbol,
+                "nombre": c.get("nombre", ""),
+                "categoria": c.get("categoria", ""),
+                "estado": c.get("estado", ""),
+                "cantidad_total": cantidad_total,
+                "precio_prom_sin_fee": precio_promedio_sin_fee,
+                "costo_prom_con_fee": costo_prom_con_fee,
+                "precio_actual": precio_actual,
+                "valor_mercado": float(c.get("valor_mercado", 0)),
+                "pnl_realizado": float(c.get("pnl_total", 0)),
+                "roi_realizado_pct": float(c.get("roi_porcentaje", 0)),
+                "pnl_fifo_no_realizado": pnl_no_realizado_fifo,
+                "pnl_sin_fee_no_realizado": pnl_no_realizado_sin_fee,
+                "roi_fifo_pct": (pnl_no_realizado_fifo / costo_total_fifo * 100) if costo_total_fifo > 0 else 0,
+                "roi_sin_fee_pct": (pnl_no_realizado_sin_fee / (cantidad_total * precio_promedio_sin_fee) * 100) if cantidad_total > 0 and precio_promedio_sin_fee > 0 else 0,
+                "prioridad": c.get("prioridad", 3),
+                "tags": c.get("tags", ""),
+                "notas": c.get("notas_personal", "")
+            })
+
+        df = pd.DataFrame(df_data)
+
+        column_config = {
+            "symbol": st.column_config.TextColumn("Symbol", disabled=True),
+            "nombre": st.column_config.TextColumn("Nombre"),
+            "categoria": st.column_config.SelectboxColumn("Categoria", options=CATEGORIAS),
+            "estado": st.column_config.SelectboxColumn("Estado", options=["PROSPECTO","ACTIVO_COMPRA","ACTIVO_PELIGRO","DORMANTE","CHURN","VIP"]),
+            "cantidad_total": st.column_config.NumberColumn("Cantidad Total", format="%.8f"),
+            "precio_prom_sin_fee": st.column_config.NumberColumn("Precio Promedio (sin fee)", format="$%.8f", disabled=True),
+            "costo_prom_con_fee": st.column_config.NumberColumn("Costo Promedio (con fee)", format="$%.8f", disabled=True),
+            "precio_actual": st.column_config.NumberColumn("Precio Actual (USD)", format="$%.8f", disabled=True),
+            "valor_mercado": st.column_config.NumberColumn("Valor Mercado (USD)", format="$%.2f", disabled=True),
+            "pnl_realizado": st.column_config.NumberColumn("PnL Realizado (USD)", format="$%.2f", disabled=True),
+            "roi_realizado_pct": st.column_config.NumberColumn("ROI Realizado %", format="%.2f%%", disabled=True),
+            "pnl_fifo_no_realizado": st.column_config.NumberColumn("PnL FIFO Real (USD)", format="$%.2f"),
+            "pnl_sin_fee_no_realizado": st.column_config.NumberColumn("PnL No Realizado (sin fee)", format="$%.2f"),
+            "roi_fifo_pct": st.column_config.NumberColumn("ROI FIFO %", format="%.2f%%"),
+            "roi_sin_fee_pct": st.column_config.NumberColumn("ROI sin fee %", format="%.2f%%"),
+            "prioridad": st.column_config.NumberColumn("Prioridad", min_value=1, max_value=5, step=1),
+            "tags": st.column_config.TextColumn("Tags"),
+            "notas": st.column_config.TextColumn("Notas")
+        }
+
+        edited_df = st.data_editor(
+            df,
+            column_config=column_config,
+            width='stretch',
+            hide_index=True,
+            key="clientes_editor",
+            disabled=["symbol", "precio_prom_sin_fee", "costo_prom_con_fee", "precio_actual", "valor_mercado", "pnl_realizado", "roi_realizado_pct", "pnl_fifo_no_realizado", "pnl_sin_fee_no_realizado", "roi_fifo_pct", "roi_sin_fee_pct"]
+        )
+
+        if st.button("Guardar cambios realizados"):
+            for idx, row in edited_df.iterrows():
+                original = df.iloc[idx]
+                if not row.equals(original):
+                    symbol = row["symbol"]
+                    update_data = {}
+                    for col in ["nombre", "categoria", "estado", "cantidad_total", "prioridad", "tags", "notas"]:
+                        if row[col] != original[col]:
+                            value = row[col]
+                            if col == "estado" and value:
+                                value = value.upper()
+                            update_data[col] = value
+                    if update_data:
+                        if "notas" in update_data:
+                            update_data["notas_personal"] = update_data.pop("notas")
+                        resp = put(f"/clientes/{symbol}", update_data)
+                        if resp:
+                            st.success(f"Cliente {symbol} actualizado")
+                        else:
+                            st.error(f"Error actualizando {symbol}")
+            st.rerun()
+
+        st.divider()
+        st.subheader("🗑️ Eliminar Cliente")
+        col_del1, col_del2 = st.columns([3, 1])
+        with col_del1:
+            cliente_a_eliminar = st.selectbox(
+                "Selecciona cliente a eliminar",
+                [c["symbol"] for c in clientes] if clientes else [],
+                key="cliente_eliminar"
+            )
+        with col_del2:
+            if st.button("🗑️ Eliminar Cliente", type="primary"):
+                if cliente_a_eliminar:
+                    if st.checkbox(f"Confirmar eliminación de {cliente_a_eliminar} (todos sus datos serán borrados)"):
+                        resp = delete(f"/clientes/{cliente_a_eliminar}")
+                        if resp:
+                            st.success(f"Cliente {cliente_a_eliminar} eliminado exitosamente")
+                            st.rerun()
+                        else:
+                            st.error("Error al eliminar cliente")
+
+        st.subheader("Actualizar Precio Individual y Ver Detalle FIFO")
+        col_sel, col_btn = st.columns([3,1])
+        with col_sel:
+            selected_symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in clientes] if clientes else [])
+        with col_btn:
+            if st.button("Actualizar precio desde Binance"):
+                if selected_symbol:
+                    precio_real = obtener_precio_real(selected_symbol)
+                    if precio_real > 0:
+                        with st.spinner(f"Actualizando precio de {selected_symbol}..."):
+                            resp = post(f"/clientes/{selected_symbol}/actualizar-precio", {"precio": precio_real})
+                            if resp:
+                                nuevo_precio = resp.get("precio_actual", 0)
+                                st.success(f"✅ Precio de {selected_symbol} actualizado a ${nuevo_precio:.8f}")
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error("Error al actualizar")
+                    else:
+                        st.error("No se pudo obtener precio de Binance para este símbolo")
+
+        if selected_symbol:
+            st.subheader(f"📦 Lotes de {selected_symbol} (FIFO)")
+            lotes_cliente = fetch(f"/lotes/cliente/{selected_symbol}")
+            if lotes_cliente:
+                df_lotes = pd.DataFrame([{
+                    "Fecha": l["fecha_compra"],
+                    "Cantidad Inicial": float(l["cantidad"]),
+                    "Cantidad Restante": float(l["cantidad_restante"]),
+                    "Precio Compra (incluye fee)": float(l["precio_unitario"]),
+                    "Exchange": l.get("exchange", ""),
+                    "Notas": l.get("notas", "")
+                } for l in lotes_cliente])
+                st.dataframe(df_lotes, width='stretch')
+            else:
+                st.info("No hay lotes activos para este cliente.")
+
+    with st.expander("➕ Nuevo Cliente"):
+        with st.form("nuevo_cliente"):
+            symbol = st.text_input("Symbol (ej: BTC, ETH)").upper()
+            nombre = st.text_input("Nombre completo (opcional)")
+            categoria = st.selectbox("Categoria", CATEGORIAS)
+            tags = st.text_input("Tags (separados por coma)")
+            notas = st.text_area("Notas personales")
+            if st.form_submit_button("Registrar Cliente"):
+                if symbol:
+                    result = post("/clientes/", {
+                        "symbol": symbol,
+                        "nombre": nombre or symbol,
+                        "categoria": categoria,
+                        "tags": tags,
+                        "notas_personal": notas
+                    })
+                    if result:
+                        st.success(f"Cliente {symbol} registrado exitosamente!")
+                        st.balloons()
+                        st.rerun()
+
+# ═══════════════════════════════════════
+# PÁGINA: INTERACCIONES
+# ═══════════════════════════════════════
+elif page == "💱 Interacciones":
+    st.title("💱 Registro de Interacciones (FIFO para ventas)")
+
+    with st.form("nueva_interaccion"):
+        col1, col2 = st.columns(2)
+        with col1:
+            symbol = st.text_input("Symbol del cliente").upper()
+        with col2:
+            tipo = st.selectbox("Tipo", ["compra", "venta", "staking", "unstaking", "dividendo", "airdrop"])
+        exchange = st.text_input("Exchange", value="binance")
+        cantidad = st.number_input("Cantidad", min_value=0.0, step=0.00000001, format="%.8f")
+        precio = st.number_input("Precio unitario (USD)", min_value=0.0, step=0.00000001, format="%.8f")
+        fee = st.number_input("Fee", min_value=0.0, step=0.00000001, format="%.8f")
+        notas = st.text_area("Notas de la interaccion")
+        if st.form_submit_button("Registrar Interaccion"):
+            if symbol and cantidad > 0 and precio > 0:
+                result = post("/interacciones/", {
+                    "cliente_symbol": symbol,
+                    "tipo": tipo,
+                    "cantidad": cantidad,
+                    "precio_unitario": precio,
+                    "fee": fee,
+                    "exchange": exchange,
+                    "notas": notas
+                })
+                if result:
+                    st.success("Interaccion registrada!")
+                    if tipo == "venta" and "detalle_lotes" in result:
+                        st.subheader("Detalle FIFO de la venta:")
+                        for det in result["detalle_lotes"]:
+                            st.write(f"Lote {det['lote_id']}: {det['cantidad']} unidades a precio compra ${det['precio_compra']:.2f} → PnL: ${det['pnl_lote']:.2f}")
+                        st.metric("PnL total de la venta", f"${result['pnl_total']:.2f}")
+                    st.rerun()
+
+    st.subheader("📜 Historial (puedes eliminar interacciones)")
+    hist_symbol = st.text_input("Ver historial de", key="hist_symbol").upper()
+    if hist_symbol:
+        historial = fetch(f"/interacciones/cliente/{hist_symbol}")
+        if historial:
+            for idx, row in enumerate(historial):
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([2,1,1,1,2,2,1])
+                with col1:
+                    st.write(row.get("tipo", ""))
+                with col2:
+                    st.write(f"{float(row.get('cantidad', 0)):.8f}")
+                with col3:
+                    st.write(f"${float(row.get('precio_unitario', 0)):.8f}")
+                with col4:
+                    st.write(f"${float(row.get('monto_usd', 0)):.2f}")
+                with col5:
+                    st.write(row.get("timestamp", "")[:16])
+                with col6:
+                    st.write(f"${float(row.get('pnl_realizado', 0)):.2f}")
+                with col7:
+                    if st.button("🗑️ Eliminar", key=f"del_{row['id']}"):
+                        if st.checkbox(f"Confirmar eliminación de {row['tipo']} {row['cantidad']} @ ${row['precio_unitario']}", key=f"confirm_{row['id']}"):
+                            resp = delete(f"/interacciones/{row['id']}")
+                            if resp:
+                                st.success(f"Interacción {row['id']} eliminada")
+                                st.rerun()
+                st.divider()
+        else:
+            st.info("No hay interacciones para este cliente.")
+
+# ═══════════════════════════════════════
+# PÁGINA: OPORTUNIDADES
+# ═══════════════════════════════════════
+elif page == "🎯 Oportunidades":
+    st.title("🎯 Pipeline de Oportunidades")
+    
+    clientes_lista = fetch("/clientes/")
+    simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
+    
+    with st.expander("➕ Nueva Oportunidad", expanded=True):
+        with st.form("nueva_oportunidad"):
+            col1, col2 = st.columns(2)
+            with col1:
+                symbol = st.text_input("Symbol del cliente").upper()
+                tipo = st.selectbox("Tipo de oportunidad", [
+                    "swing_trade", "scalp", "dca", "staking", "breakout", "reversal"
+                ])
+                entrada = st.number_input("Precio entrada (USD)", min_value=0.0, step=0.01)
+                objetivo = st.number_input("Precio objetivo (USD)", min_value=0.0, step=0.01)
+            with col2:
+                stop = st.number_input("Stop loss (USD)", min_value=0.0, step=0.01)
+                monto = st.number_input("Monto planificado (USD)", min_value=0.0, step=10.0)
+                confianza = st.slider("Confianza (1-5)", 1, 5, 3)
+                notas = st.text_area("Analisis y notas")
+            submitted = st.form_submit_button("Crear Oportunidad")
+            if submitted:
+                if not symbol:
+                    st.error("Debes ingresar un símbolo de cliente")
+                elif symbol not in simbolos_clientes:
+                    st.error(f"El cliente '{symbol}' no existe. Regístralo primero en la sección Clientes.")
+                elif entrada <= 0 or objetivo <= 0 or stop <= 0:
+                    st.error("Los precios de entrada, objetivo y stop deben ser mayores que cero.")
+                else:
+                    with st.spinner("Creando oportunidad..."):
+                        result = post("/oportunidades/", {
+                            "cliente_symbol": symbol,
+                            "tipo": tipo,
+                            "precio_entrada": entrada,
+                            "precio_objetivo": objetivo,
+                            "precio_stop_loss": stop,
+                            "monto_planificado": monto,
+                            "confianza": confianza,
+                            "notas_analisis": notas
+                        })
+                        if result:
+                            st.success("Oportunidad creada exitosamente!")
+                            st.rerun()
+                        else:
+                            st.error("No se pudo crear la oportunidad. Revisa que los datos sean correctos.")
+    
+    st.subheader("📋 Oportunidades Abiertas")
+    if st.button("Refrescar lista"):
+        st.rerun()
+    
+    oportunidades = fetch("/oportunidades/?estado=abierta")
+    if oportunidades:
+        df_opp = pd.DataFrame([{
+            "ID": o["id"],
+            "Cliente": o.get("cliente_id", ""),
+            "Tipo": o.get("tipo", ""),
+            "Entrada": float(o.get("precio_entrada", 0)),
+            "Objetivo": float(o.get("precio_objetivo", 0)),
+            "Stop": float(o.get("precio_stop_loss", 0)),
+            "R:R": float(o.get("riesgo_beneficio", 0)),
+            "Confianza": o.get("confianza", 3),
+            "Fecha Creación": o.get("fecha_creacion", "")[:16] if o.get("fecha_creacion") else "",
+            "Notas": o.get("notas_analisis", "")[:50]
+        } for o in oportunidades])
+        st.dataframe(df_opp, width='stretch')
+        
+        st.subheader("Cerrar Oportunidad")
+        col_opp, col_estado, col_pnl, col_btn = st.columns([2,2,2,1])
+        with col_opp:
+            opp_id = st.selectbox("Seleccionar oportunidad", [o["id"] for o in oportunidades])
+        with col_estado:
+            nuevo_estado = st.selectbox("Nuevo estado", ["ejecutada", "cancelada"])
+        with col_pnl:
+            pnl_realizado = st.number_input("PnL realizado (USD)", value=0.0, step=0.01)
+        with col_btn:
+            if st.button("Cerrar"):
+                resp = requests.post(f"{API_URL}/oportunidades/{opp_id}/cerrar", params={"estado": nuevo_estado, "pnl": pnl_realizado})
+                if resp.status_code == 200:
+                    st.success("Oportunidad cerrada")
+                    st.rerun()
+                else:
+                    st.error(f"Error al cerrar: {resp.text}")
+    else:
+        st.info("No hay oportunidades abiertas. Crea una nueva usando el formulario de arriba.")
+
+# ═══════════════════════════════════════
+# PÁGINA: TAREAS
+# ═══════════════════════════════════════
+elif page == "✅ Tareas":
+    st.title("✅ Tareas y Alertas")
+    
+    clientes_lista = fetch("/clientes/")
+    simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
+    
+    with st.expander("➕ Nueva Tarea", expanded=True):
+        with st.form("nueva_tarea"):
+            symbol = st.text_input("Symbol del cliente").upper()
+            tipo = st.selectbox("Tipo de tarea", [
+                "revisar_stop", "take_profit", "dca", "actualizar_precio",
+                "revision_estrategia", "rebalancear", "alerta_precio"
+            ])
+            descripcion = st.text_area("Descripcion")
+            dias = st.number_input("Días para completar", min_value=0, max_value=30, value=1)
+            prioridad = st.slider("Prioridad (1=alta, 5=baja)", 1, 5, 2)
+            submitted = st.form_submit_button("Crear Tarea")
+            if submitted:
+                if not symbol:
+                    st.error("Debes ingresar un símbolo de cliente")
+                elif symbol not in simbolos_clientes:
+                    st.error(f"El cliente '{symbol}' no existe. Regístralo primero en la sección Clientes.")
+                elif not descripcion:
+                    st.error("La descripción es obligatoria")
+                else:
+                    with st.spinner("Creando tarea..."):
+                        result = post("/tareas/", {
+                            "cliente_symbol": symbol,
+                            "tipo_tarea": tipo,
+                            "descripcion": descripcion,
+                            "prioridad": prioridad
+                        })
+                        if result:
+                            st.success("Tarea creada exitosamente!")
+                            st.rerun()
+                        else:
+                            st.error("No se pudo crear la tarea. Revisa los datos.")
+    
+    st.subheader("📋 Tareas Pendientes")
+    if st.button("Refrescar lista"):
+        st.rerun()
+    
+    tareas_pendientes = fetch("/tareas/pendientes")
+    if tareas_pendientes:
+        for t in tareas_pendientes:
+            with st.container():
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(f"**{t.get('tipo_tarea', '')}** - {t.get('descripcion', '')}")
+                    cliente_id = t.get('cliente_id')
+                    if cliente_id:
+                        st.caption(f"Cliente ID: {cliente_id} | Límite: {t.get('fecha_limite', '')}")
+                    else:
+                        st.caption(f"Límite: {t.get('fecha_limite', '')}")
+                    if t.get('fecha_limite'):
+                        fecha_limite = datetime.fromisoformat(t['fecha_limite'].replace('Z', '+00:00'))
+                        if fecha_limite < datetime.now():
+                            st.markdown("⚠️ **VENCIDA**")
+                with col2:
+                    prioridad = t.get('prioridad', 2)
+                    color = "🟢" if prioridad <= 2 else "🟡" if prioridad <= 4 else "🔴"
+                    st.write(f"{color} Prioridad {prioridad}")
+                with col3:
+                    if st.button("✅ Completar", key=f"comp_{t['id']}"):
+                        requests.post(f"{API_URL}/tareas/{t['id']}/completar")
+                        st.success("Tarea completada")
+                        st.rerun()
+                st.divider()
+    else:
+        st.success("No hay tareas pendientes. ¡Todo al día! 🎉")
+    
+    with st.expander("📜 Ver tareas completadas (últimas 10)"):
+        with st.spinner("Cargando historial de tareas completadas..."):
+            tareas_completadas = fetch("/tareas/completadas?limit=10")
+            if tareas_completadas:
+                if isinstance(tareas_completadas, list) and len(tareas_completadas) > 0:
+                    df_completadas = pd.DataFrame([{
+                        "ID": t["id"],
+                        "Cliente ID": t.get("cliente_id", ""),
+                        "Tipo": t.get("tipo_tarea", ""),
+                        "Descripción": t.get("descripcion", ""),
+                        "Completada el": t.get("fecha_completada", "")[:16] if t.get("fecha_completada") else "Fecha no registrada"
+                    } for t in tareas_completadas])
+                    st.dataframe(df_completadas, width='stretch')
+                else:
+                    st.info("No hay tareas completadas para mostrar.")
+            else:
+                st.info("No se pudieron cargar las tareas completadas. Asegúrate de que la API esté corriendo.")
+
+# ═══════════════════════════════════════
+# PÁGINA: LOTES FIFO
+# ═══════════════════════════════════════
+elif page == "📦 Lotes FIFO":
+    st.title("📦 Lotes de Compra (FIFO)")
+    st.info("Cada compra genera un lote. Las ventas consumen lotes desde el más antiguo (FIFO).")
+
+    symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in fetch("/clientes/") or []])
+    if symbol:
+        lotes = fetch(f"/lotes/cliente/{symbol}")
+        if lotes:
+            df_lotes = pd.DataFrame([{
+                "ID": l["id"],
+                "Fecha": l["fecha_compra"],
+                "Cantidad Inicial": float(l["cantidad"]),
+                "Cantidad Restante": float(l["cantidad_restante"]),
+                "Precio Compra (incluye fee)": float(l["precio_unitario"]),
+                "Exchange": l.get("exchange", ""),
+                "Notas": l.get("notas", "")
+            } for l in lotes])
+            st.dataframe(df_lotes, width='stretch')
+            total_restante = df_lotes["Cantidad Restante"].sum()
+            costo_total_restante = sum(df_lotes["Cantidad Restante"] * df_lotes["Precio Compra (incluye fee)"])
+            st.metric("Cantidad total remanente", f"{total_restante:.8f}")
+            st.metric("Costo promedio ponderado restante", f"${costo_total_restante/total_restante:.4f}" if total_restante>0 else "$0")
+        else:
+            st.write("No hay lotes para este cliente.")
+
+# ═══════════════════════════════════════
+# PÁGINA: ANALYTICS
+# ═══════════════════════════════════════
+elif page == "📈 Analytics":
+    st.title("📈 Analytics y Reportes")
+    
+    st.subheader("🔥 Heatmap: Rendimiento por Categoría (ROI %)")
+    perf_data = fetch("/analytics/performance-by-category")
+    if perf_data:
+        df_perf = pd.DataFrame(perf_data)
+        if not df_perf.empty:
+            df_perf = df_perf.sort_values("roi_promedio", ascending=False)
+            fig = px.imshow(
+                df_perf[["roi_promedio"]].values.T,
+                x=df_perf["categoria"],
+                y=["ROI Promedio %"],
+                color_continuous_scale="RdYlGn",
+                text_auto=True,
+                aspect="auto",
+                title="ROI Promedio por Categoría"
+            )
+            fig.update_xaxes(tickangle=45)
+            fig.update_layout(height=300, width=800)
+            st.plotly_chart(fig, width='stretch')
+        else:
+            st.info("No hay datos de categorías aún. Registra clientes con categorías.")
+    else:
+        st.info("No se pudieron cargar los datos de rendimiento por categoría.")
+    
+    data = fetch("/dashboard/resumen")
+    if data:
+        resumen = data.get("resumen", {})
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Invertido", f"${resumen.get('total_invertido',0):,.2f}")
+        col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado',0):,.2f}")
+        col3.metric("PnL Total", f"${resumen.get('pnl_total',0):,.2f}")
+    
+    st.subheader("Distribución del Portafolio")
+    distribucion = fetch("/dashboard/resumen").get("distribucion",[]) if data else []
+    if distribucion:
+        df_dist = pd.DataFrame(distribucion)
+        fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composición Actual")
+        st.plotly_chart(fig, width='stretch')
+    
+    st.subheader("Evolución de PnL Realizado (Últimos 7 días)")
+    daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
+    if daily_pnl_data:
+        df_pnl = pd.DataFrame(daily_pnl_data)
+        if not df_pnl.empty:
+            fig = go.Figure()
+            fig.add_trace(go.Bar(
+                x=df_pnl["date"],
+                y=df_pnl["pnl"],
+                marker_color=['green' if val >= 0 else 'red' for val in df_pnl["pnl"]],
+                text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
+                textposition='auto'
+            ))
+            fig.update_layout(title="PnL Realizado por Día", xaxis_title="Fecha", yaxis_title="PnL (USD)")
+            st.plotly_chart(fig, width='stretch')
+        else:
+            st.info("No hay datos de PnL para los últimos 7 días.")
+    else:
+        st.info("No se pudieron cargar los datos de PnL diario.")
+
+# ═══════════════════════════════════════
+# PÁGINA: MERCADO EN VIVO
+# ═══════════════════════════════════════
+elif page == "📡 Mercado en Vivo":
+    st.title("📡 Datos Reales de Binance")
+    st.markdown("Tendencias y sentimiento del mercado en tiempo real")
+    
+    simbolos = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "PEPE"]
+    symbol = st.selectbox("Selecciona una criptomoneda", simbolos, index=0)
+    
+    ticker = obtener_ticker_real(symbol)
+    if ticker:
+        cambio_pct = ticker.get("percentage", 0.0)
+        precio_actual = ticker.get("last", 0)
+        
+        if cambio_pct > 0.5:
+            arrow = "🔼"
+            tendencia = "Alcista fuerte"
+        elif cambio_pct > 0:
+            arrow = "↗️"
+            tendencia = "Ligeramente alcista"
+        elif cambio_pct < -0.5:
+            arrow = "🔽"
+            tendencia = "Bajista fuerte"
+        elif cambio_pct < 0:
+            arrow = "↘️"
+            tendencia = "Ligeramente bajista"
+        else:
+            arrow = "⏸️"
+            tendencia = "Neutral"
+        
+        if cambio_pct > 3:
+            sentimiento = "🟢 Muy alcista / Euforia"
+        elif cambio_pct > 1:
+            sentimiento = "🟢 Alcista / Confianza"
+        elif cambio_pct > 0.2:
+            sentimiento = "🟢 Ligeramente alcista"
+        elif cambio_pct > -0.2:
+            sentimiento = "⚪ Neutral / Lateral"
+        elif cambio_pct > -1:
+            sentimiento = "🔴 Ligeramente bajista"
+        elif cambio_pct > -3:
+            sentimiento = "🔴 Bajista / Preocupación"
+        else:
+            sentimiento = "🔴 Muy bajista / Pánico"
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric(f"{symbol}/USDT", f"${precio_actual:,.4f}", delta=f"{cambio_pct:.2f}%")
+        with col2:
+            st.markdown(f"### Tendencia: {arrow} {tendencia}")
+        with col3:
+            st.markdown(f"### Sentimiento: {sentimiento}")
+        
+        st.divider()
+        
+        st.subheader("Detalles del Ticker")
+        detalle_col1, detalle_col2 = st.columns(2)
+        with detalle_col1:
+            st.metric("Máximo 24h", f"${ticker.get('high', 0):,.4f}")
+            st.metric("Mínimo 24h", f"${ticker.get('low', 0):,.4f}")
+            st.metric("Volumen (24h)", f"{ticker.get('volume', 0):,.2f}")
+        with detalle_col2:
+            st.metric("Ask", f"${ticker.get('ask', 0):,.4f}")
+            st.metric("Bid", f"${ticker.get('bid', 0):,.4f}")
+            st.metric("Última actualización", ticker.get('timestamp', '')[:19])
+        
+        st.subheader("Gráfico de Velas (OHLCV)")
+        timeframe = st.selectbox("Timeframe", ["1m","5m","15m","30m","1h","4h","1d"], index=4)
+        limit = st.slider("Cantidad de velas", 30, 200, 100)
+        velas = obtener_velas(symbol, timeframe, limit)
+        if velas:
+            df_velas = pd.DataFrame(velas)
+            df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
+            fig = go.Figure(data=[go.Candlestick(
+                x=df_velas['timestamp'],
+                open=df_velas['open'],
+                high=df_velas['high'],
+                low=df_velas['low'],
+                close=df_velas['close']
+            )])
+            fig.update_layout(title=f"{symbol}/USDT - Velas {timeframe}", xaxis_title="Fecha", yaxis_title="Precio USD")
+            st.plotly_chart(fig, width='stretch')
+        else:
+            st.warning("No se pudieron obtener velas para este símbolo.")
+    else:
+        st.error("No se pudo obtener información del ticker. Intenta con otro símbolo.")
+
+# ═══════════════════════════════════════
+# PÁGINA: TENDENCIAS DE MERCADO (CoinGecko)
+# ═══════════════════════════════════════
+elif page == "🔥 Tendencias de Mercado":
+    st.title("🔥 Tendencias de Mercado (CoinGecko)")
+    st.markdown("Criptomonedas más buscadas y con mayor tendencia actualmente.")
+    
+    if st.button("🔄 Actualizar datos"):
+        st.cache_data.clear()
+        st.rerun()
+    
+    with st.spinner("Cargando datos de tendencias, Binance y correlaciones..."):
+        binance_symbols = obtener_simbolos_binance()
+        tendencias = obtener_tendencias_coingecko()
+        
+        if tendencias:
+            df_list = []
+            progress_bar = st.progress(0)
+            for i, token in enumerate(tendencias):
+                token_id = token["id"]
+                symbol = token["symbol"]
+                name = token["name"]
+                score = token["score"]
+                market_rank = token["market_cap_rank"]
+                thumb = token["thumb"]
+                
+                in_binance = f"{symbol}USDT" in binance_symbols
+                price_data = obtener_precio_actual_coingecko(token_id)
+                change_24h = price_data["change_24h"]
+                
+                if change_24h > 1:
+                    trend_icon = "🟢"
+                    trend_text = "Alcista fuerte"
+                elif change_24h > 0:
+                    trend_icon = "🟢"
+                    trend_text = "Alcista"
+                elif change_24h > -1:
+                    trend_icon = "🔴"
+                    trend_text = "Bajista"
+                else:
+                    trend_icon = "🔴"
+                    trend_text = "Bajista fuerte"
+                
+                correlation = None
+                if symbol != "BTC" and token_id:
+                    token_prices = obtener_historicos_coingecko(token_id, days=7)
+                    btc_prices = obtener_historicos_coingecko("bitcoin", days=7)
+                    if token_prices and btc_prices:
+                        min_len = min(len(token_prices), len(btc_prices))
+                        if min_len >= 3:
+                            corr = calcular_correlacion_con_btc(token_prices[:min_len], btc_prices[:min_len])
+                            if corr is not None:
+                                if corr > 0.5:
+                                    correlation = f"🟢 Positiva ({corr:.2f})"
+                                elif corr < -0.5:
+                                    correlation = f"🔴 Negativa ({corr:.2f})"
+                                else:
+                                    correlation = f"⚪ Neutra ({corr:.2f})"
+                            else:
+                                correlation = "⚪ No disponible"
+                        else:
+                            correlation = "⚪ Datos insuficientes"
+                    else:
+                        correlation = "⚪ Sin datos"
+                elif symbol == "BTC":
+                    correlation = "⚪ Referencia"
+                
+                df_list.append({
+                    "Token": symbol,
+                    "Nombre": name,
+                    "Score": score,
+                    "Market Cap Rank": market_rank,
+                    "En Binance": "✅" if in_binance else "❌",
+                    "Cambio 24h (%)": round(change_24h, 2),
+                    "Tendencia": f"{trend_icon} {trend_text}",
+                    "Correlación BTC": correlation,
+                    "Logo": thumb,
+                    "ID": token_id
+                })
+                progress_bar.progress((i + 1) / len(tendencias))
+            
+            df_trend = pd.DataFrame(df_list)
+            if not df_trend.empty:
+                display_cols = ["Token", "Nombre", "Score", "Market Cap Rank", "En Binance", "Cambio 24h (%)", "Tendencia", "Correlación BTC"]
+                st.dataframe(df_trend[display_cols], width='stretch')
+                
+                fig = px.bar(df_trend, x="Token", y="Score", color="Score",
+                             color_continuous_scale="Blues", title="Score de Tendencia")
+                st.plotly_chart(fig, width='stretch')
+                
+                fig2 = go.Figure()
+                colors = ['green' if x > 0 else 'red' for x in df_trend["Cambio 24h (%)"]]
+                fig2.add_trace(go.Bar(
+                    x=df_trend["Token"],
+                    y=df_trend["Cambio 24h (%)"],
+                    marker_color=colors,
+                    text=df_trend["Cambio 24h (%)"].apply(lambda x: f"{x:.2f}%"),
+                    textposition='auto'
+                ))
+                fig2.update_layout(title="Variación 24h por Token", xaxis_title="Token", yaxis_title="Cambio (%)")
+                st.plotly_chart(fig2, width='stretch')
+                
+                st.subheader("🖼️ Logos de tokens en tendencia")
+                cols = st.columns(5)
+                for i, row in df_trend.head(10).iterrows():
+                    with cols[i % 5]:
+                        if row["Logo"]:
+                            st.image(row["Logo"], caption=row["Token"], width=60)
+                
+                binance_count = df_trend[df_trend["En Binance"] == "✅"].shape[0]
+                st.info(f"De los {len(df_trend)} tokens en tendencia, **{binance_count}** cotizan actualmente en Binance (par USDT).")
+            else:
+                st.info("No se encontraron datos de tendencias.")
+        else:
+            st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
+
+# ═══════════════════════════════════════
+# PÁGINA: EVENTOS BINANCE (solo enlace manual)
+# ═══════════════════════════════════════
+elif page == "📢 Eventos Binance":
+    st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
+    st.markdown("""
+    **⚠️ Actualización automática desactivada**  
+    Debido a restricciones técnicas (bloqueo de scraping por parte de Binance), esta sección ya no intenta obtener eventos de forma automática.
+    
+    Para estar al día de los últimos lanzamientos (Launchpool, Megadrop, nuevos listados), visita directamente la página oficial de anuncios:
+    """)
+    st.markdown(
+        "[🔗 Abrir página de anuncios de Binance](https://www.binance.com/en/support/announcement/c-48?c=48&navId=48)",
+        unsafe_allow_html=True
+    )
+    st.info("Puedes revisar manualmente los anuncios y luego registrar tus oportunidades o tareas en el CRM.")
+    
+    eventos = fetch("/binance-events?limit=10")
+    if eventos and isinstance(eventos, list) and len(eventos) > 0:
+        with st.expander("📦 Eventos anteriores (guardados en la base de datos)"):
+            df_events = pd.DataFrame(eventos)
+            if "detected_at" in df_events.columns:
+                df_events["detected_at"] = pd.to_datetime(df_events["detected_at"]).dt.strftime("%Y-%m-%d %H:%M")
+            st.dataframe(df_events[["title", "event_type", "detected_at", "url"]], width='stretch')
+    
+    with st.expander("ℹ️ ¿Por qué ya no se actualizan automáticamente?"):
+        st.markdown("""
+        - Binance ha bloqueado el acceso automatizado a su feed RSS y a las páginas de anuncios (códigos 202/404/403).
+        - Para evitar errores y mantener la estabilidad de la aplicación, se ha optado por redirigir al usuario a la fuente oficial.
+        - Si en el futuro Binance ofrece una API pública para eventos, se podrá reactivar la automatización.
+        """)
+
+# ═══════════════════════════════════════
+# PÁGINA: ANÁLISIS Y TRADING
+# ═══════════════════════════════════════
+elif page == "📈 Análisis y Trading":
+    st.title("📈 Análisis Técnico e Historial de Trading")
+    
+    tab_analisis, tab_historial = st.tabs(["📊 Análisis Técnico", "📜 Historial de Transacciones"])
+    
+    with tab_analisis:
+        st.subheader("Análisis de Soportes y Resistencias")
+        col1, col2 = st.columns(2)
+        with col1:
+            symbol_analisis = st.text_input("Símbolo de la moneda (ej: BTC, ETH, XRP)", value="BTC", key="analisis_symbol").upper()
+        with col2:
+            temporalidad = st.selectbox("Temporalidad", ["1H", "4H", "1D", "1S (Semana)", "1M (Mes)"], index=2, key="analisis_temporalidad")
+        
+        if st.button("Generar Análisis", key="analisis_btn"):
+            if not symbol_analisis:
+                st.error("Ingresa un símbolo de moneda válido")
+            else:
+                if temporalidad == "1H":
+                    intervalo = "1h"
+                    limite = 168
+                    periodo_texto = "última semana (velas de 1 hora)"
+                elif temporalidad == "4H":
+                    intervalo = "4h"
+                    limite = 42
+                    periodo_texto = "última semana (velas de 4 horas)"
+                elif temporalidad == "1D":
+                    intervalo = "1d"
+                    limite = 30
+                    periodo_texto = "último mes (velas diarias)"
+                elif temporalidad == "1S (Semana)":
+                    intervalo = "1w"
+                    limite = 12
+                    periodo_texto = "últimos 3 meses (velas semanales)"
+                else:
+                    intervalo = "1d"
+                    limite = 30
+                    periodo_texto = "último mes (velas diarias)"
+                
+                with st.spinner(f"Obteniendo datos de {symbol_analisis} desde Binance ({periodo_texto})..."):
+                    velas = obtener_velas_binance(symbol_analisis, interval=intervalo, limit=limite)
+                    if velas and len(velas) >= 5:
+                        soportes, resistencias = encontrar_soportes_resistencias(velas, num_niveles=3)
+                        df_velas = pd.DataFrame(velas)
+                        df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
+                        
+                        fig = go.Figure()
+                        fig.add_trace(go.Candlestick(
+                            x=df_velas['timestamp'],
+                            open=df_velas['open'],
+                            high=df_velas['high'],
+                            low=df_velas['low'],
+                            close=df_velas['close'],
+                            name='Precio'
+                        ))
+                        for i, s in enumerate(soportes):
+                            fig.add_hline(y=s, line_dash="dash", line_color="green",
+                                          annotation_text=f"Soporte {i+1} (${s:.2f})",
+                                          annotation_position="bottom right")
+                        for i, r in enumerate(resistencias):
+                            fig.add_hline(y=r, line_dash="dash", line_color="red",
+                                          annotation_text=f"Resistencia {i+1} (${r:.2f})",
+                                          annotation_position="top right")
+                        fig.update_layout(
+                            title=f"{symbol_analisis}/USDT - {periodo_texto.capitalize()}",
+                            xaxis_title="Fecha",
+                            yaxis_title="Precio (USD)",
+                            height=600,
+                            template="plotly_dark"
+                        )
+                        st.plotly_chart(fig, width='stretch')
+                        
+                        col_s, col_r = st.columns(2)
+                        with col_s:
+                            st.subheader("📉 Soportes detectados")
+                            if soportes:
+                                st.write(pd.DataFrame({"Soporte (USD)": [f"${s:.2f}" for s in soportes]}))
+                            else:
+                                st.info("No se detectaron soportes claros en el período.")
+                        with col_r:
+                            st.subheader("📈 Resistencias detectadas")
+                            if resistencias:
+                                st.write(pd.DataFrame({"Resistencia (USD)": [f"${r:.2f}" for r in resistencias]}))
+                            else:
+                                st.info("No se detectaron resistencias claras en el período.")
+                    else:
+                        st.error(f"No se pudieron obtener datos de {symbol_analisis}. Verifica el símbolo o inténtalo más tarde.")
+    
+    with tab_historial:
+        st.subheader("Todas las compras y ventas registradas")
+        with st.spinner("Cargando historial de transacciones..."):
+            clientes_list = fetch("/clientes/")
+            if clientes_list:
+                all_transactions = []
+                for cliente in clientes_list:
+                    symbol = cliente["symbol"]
+                    interacciones = fetch(f"/interacciones/cliente/{symbol}")
+                    if interacciones:
+                        for t in interacciones:
+                            if t["tipo"] in ["compra", "venta"]:
+                                all_transactions.append({
+                                    "Moneda": symbol,
+                                    "Tipo": t["tipo"].upper(),
+                                    "Cantidad": float(t["cantidad"]),
+                                    "Precio Unitario (USD)": float(t["precio_unitario"]),
+                                    "Monto (USD)": float(t["monto_usd"]),
+                                    "Fee (USD)": float(t["fee"]),
+                                    "Fecha": t["timestamp"][:16] if t["timestamp"] else "",
+                                    "PnL Realizado (USD)": float(t["pnl_realizado"]) if t["tipo"] == "venta" else 0
+                                })
+                if all_transactions:
+                    df_hist = pd.DataFrame(all_transactions)
+                    df_hist = df_hist.sort_values("Fecha", ascending=False)
+                    st.dataframe(df_hist, width='stretch')
+                    
+                    total_comprado = df_hist[df_hist["Tipo"] == "COMPRA"]["Monto (USD)"].sum()
+                    total_vendido = df_hist[df_hist["Tipo"] == "VENTA"]["Monto (USD)"].sum()
+                    total_pnl = df_hist["PnL Realizado (USD)"].sum()
+                    total_fees = df_hist["Fee (USD)"].sum()
+                    
+                    st.subheader("📊 Resumen")
+                    col_a, col_b, col_c, col_d = st.columns(4)
+                    col_a.metric("Total Comprado", f"${total_comprado:,.2f}")
+                    col_b.metric("Total Vendido", f"${total_vendido:,.2f}")
+                    col_c.metric("Total PnL Realizado", f"${total_pnl:,.2f}", delta_color="normal")
+                    col_d.metric("Total Comisiones", f"${total_fees:,.2f}")
+                else:
+                    st.info("No hay transacciones de compra/venta registradas todavía.")
+            else:
+                st.info("No hay clientes registrados aún.")
+                
+                
+elif page == "📰 Noticias":
+    mostrar_pagina_noticias()
+    
+elif page == "📊 P2P Binance":
+    mostrar_pagina_p2p()    
+    
+# ═══════════════════════════════════════
+# PÁGINA: CONFIGURACION
+# ═══════════════════════════════════════
+elif page == "⚙️ Configuracion":
+    st.title("⚙️ Configuración")
+    st.info("Configuración de Exchange y alertas (simulada).")
+    with st.form("exchange_config"):
+        exchange = st.selectbox("Exchange", ["binance", "coinbase", "kraken", "bybit"])
+        api_key = st.text_input("API Key", type="password")
+        api_secret = st.text_input("API Secret", type="password")
+        st.form_submit_button("Guardar")
+    
+    st.divider()
+    st.subheader("💾 Respaldo de Base de Datos")
+    st.markdown("Descarga un respaldo completo de la base de datos (archivo .db).")
+    if st.button("📥 Descargar respaldo de base de datos"):
+        try:
+            r = requests.get(f"{API_URL}/export-db")
+            if r.status_code == 200:
+                st.download_button(
+                    label="💾 Descargar crypto_crm_backup.db",
+                    data=r.content,
+                    file_name="crypto_crm_backup.db",
+                    mime="application/x-sqlite3"
+                )
+                st.success("Respaldo generado correctamente.")
+            else:
+                st.error(f"Error al exportar: {r.text}")
+        except Exception as e:
+            st.error(f"Error: {e}")
+    st.info("Para restaurar un respaldo, reemplaza manualmente el archivo crypto_crm.db en la carpeta del proyecto y reinicia la aplicación.")
+
+================================================================================
+  FIN DE ARCHIVO: dashboard/streamlit_app.py
+================================================================================
+
+================================================================================
+  ARCHIVO: dashboard/noticias.py
+================================================================================
+import streamlit as st
+import feedparser
+from datetime import datetime
+
+@st.cache_data(ttl=600)
+def obtener_noticias_rss():
+    url = "https://es.cointelegraph.com/rss"
+    try:
+        feed = feedparser.parse(url)
+        noticias = []
+        for entry in feed.entries[:20]:
+            noticias.append({
+                "titulo": entry.get("title", "Sin título"),
+                "descripcion": entry.get("summary", ""),
+                "fuente": "Cointelegraph en Español",
+                "url": entry.get("link", "#"),
+                "fecha": entry.get("published", ""),
+                "dominio": "es.cointelegraph.com"
+            })
+        return noticias
+    except Exception as e:
+        st.error(f"Error al obtener noticias: {e}")
+        return []
+
+def mostrar_pagina_noticias():
+    st.title("📰 Noticias del mundo cripto")
+    st.markdown("Fuente: **Cointelegraph en Español** (feed RSS público)")
+    
+    with st.spinner("Cargando últimas noticias..."):
+        noticias = obtener_noticias_rss()
+    
+    if not noticias:
+        st.warning("No se pudieron cargar noticias en este momento. Intenta más tarde.")
+        return
+    
+    for idx, noticia in enumerate(noticias):
+        with st.expander(f"🔹 {noticia['titulo'][:100]}"):
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.markdown(f"**{noticia['titulo']}**")
+                if noticia['descripcion']:
+                    desc_limpia = noticia['descripcion'].replace('<p>', '').replace('</p>', '').replace('<br />', '')
+                    st.write(desc_limpia[:300] + "...")
+                st.caption(f"Fuente: {noticia['fuente']} | {noticia['fecha'][:16] if noticia['fecha'] else 'Fecha desconocida'}")
+                st.markdown(f"[Leer más]({noticia['url']})", unsafe_allow_html=True)
+            with col2:
+                st.image(f"https://www.google.com/s2/favicons?domain={noticia['dominio']}", width=32)
+        st.divider()
+    
+    st.caption("Noticias obtenidas del feed RSS de Cointelegraph – Actualización automática cada 10 minutos.")
+
+================================================================================
+  FIN DE ARCHIVO: dashboard/noticias.py
+================================================================================
+
+================================================================================
+  ARCHIVO: dashboard/p2p.py
+================================================================================
+import streamlit as st
+import requests
+import pandas as pd
+from datetime import datetime
+
+API_URL = "http://localhost:8000"
+
+@st.cache_data(ttl=300)
+def obtener_datos_p2p(asset, fiat):
+    try:
+        r = requests.get(f"{API_URL}/p2p/best-prices", params={"asset": asset, "fiat": fiat}, timeout=10)
+        if r.status_code == 200:
+            return r.json()
+        else:
+            st.error(f"Error {r.status_code}")
+            return None
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
+        return None
+
+def mostrar_pagina_p2p():
+    st.title("📊 Mercado P2P Binance")
+    st.markdown("Monitorea spreads entre compra y venta para detectar oportunidades de arbitraje.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        asset = st.selectbox("Criptomoneda", ["USDT", "BTC", "ETH", "BNB"], index=0)
+    with col2:
+        fiat = st.selectbox("Moneda fiat", ["ARS", "MXN", "COP", "PEN", "CLP", "BRL", "VES", "USD"], index=0)
+
+    if st.button("🔄 Actualizar ahora"):
+        st.cache_data.clear()
+        st.rerun()
+
+    with st.spinner("Consultando Binance P2P..."):
+        data = obtener_datos_p2p(asset, fiat)
+
+    if not data:
+        st.warning("No se pudieron obtener datos. Intenta más tarde.")
+        return
+
+    col_a, col_b, col_c, col_d = st.columns(4)
+    col_a.metric("💰 Comprar (SELL)", f"${data['buy_price']:.2f}", delta=f"${data['buy_price']:.2f}")
+    col_b.metric("💰 Vender (BUY)", f"${data['sell_price']:.2f}", delta=f"${data['sell_price']:.2f}")
+    col_c.metric("Spread absoluto", f"${data['spread_abs']:.2f}")
+    col_d.metric("Spread %", f"{data['spread_pct']:.2f}%", 
+                 delta=f"{data['spread_pct']:.2f}%" if data['spread_pct'] > 0 else None)
+
+    st.divider()
+
+    if data['spread_pct'] > 1.0:
+        st.success(f"📢 **Oportunidad de arbitraje!** Comprar a ${data['buy_price']:.2f} y vender a ${data['sell_price']:.2f} → ganancia de ${data['spread_abs']:.2f} por unidad ({data['spread_pct']:.2f}%).")
+    else:
+        st.info("Spread bajo. No hay oportunidad clara en este momento.")
+
+    st.subheader("📈 Órdenes de compra (ellos compran, nosotros vendemos)")
+    buy_orders = data.get("buy_orders", [])
+    if buy_orders:
+        df_buy = pd.DataFrame([{
+            "Precio": float(o["adv"]["price"]),
+            "Monto mínimo": float(o["adv"]["minSingleTransAmount"]),
+            "Monto máximo": float(o["adv"]["maxSingleTransAmount"]),
+            "Métodos de pago": ", ".join([p["payType"] for p in o["adv"].get("payTypes", [])])
+        } for o in buy_orders])
+        st.dataframe(df_buy, width='stretch')
+    else:
+        st.info("No hay órdenes de compra.")
+
+    st.subheader("📉 Órdenes de venta (ellos venden, nosotros compramos)")
+    sell_orders = data.get("sell_orders", [])
+    if sell_orders:
+        df_sell = pd.DataFrame([{
+            "Precio": float(o["adv"]["price"]),
+            "Monto mínimo": float(o["adv"]["minSingleTransAmount"]),
+            "Monto máximo": float(o["adv"]["maxSingleTransAmount"]),
+            "Métodos de pago": ", ".join([p["payType"] for p in o["adv"].get("payTypes", [])])
+        } for o in sell_orders])
+        st.dataframe(df_sell, width='stretch')
+    else:
+        st.info("No hay órdenes de venta.")
+
+    st.caption(f"Última actualización: {data.get('timestamp', '')}")
+
+================================================================================
+  FIN DE ARCHIVO: dashboard/p2p.py
+================================================================================
+
+================================================================================
+  ARCHIVO: config.py
+================================================================================
+from pydantic_settings import BaseSettings
+from typing import Optional
+
+class Settings(BaseSettings):
+    DATABASE_URL: str = "sqlite:///./crypto_crm.db"
+    API_HOST: str = "0.0.0.0"
+    API_PORT: int = 8000
+    DEBUG: bool = True
+    EXCHANGE_ID: str = "binance"
+    EXCHANGE_API_KEY: Optional[str] = None
+    EXCHANGE_API_SECRET: Optional[str] = None
+    REDIS_URL: str = "redis://localhost:6379/0"
+    ALERTA_PERDIDA_PORCENTAJE: float = 20.0
+    ALERTA_GANANCIA_PORCENTAJE: float = 50.0
+    ALERTA_CONCENTRACION_MAX: float = 30.0
+    DIAS_CLIENTE_DORMIDO: int = 30
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+
+================================================================================
+  FIN DE ARCHIVO: config.py
+================================================================================
+
+================================================================================
+  ARCHIVO: requirements.txt
+================================================================================
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
+sqlalchemy==2.0.30
+alembic==1.13.1
+pydantic==2.7.0
+pydantic-settings==2.2.1
+streamlit==1.35.0
+plotly==5.22.0
+pandas==2.2.2
+ccxt==4.3.0
+celery==5.4.0
+redis==5.0.0
+python-telegram-bot==21.0
+pytest==8.2.0
+httpx==0.27.0
+streamlit-autorefresh==1.0.1
+beautifulsoup4==4.12.3
+lxml==5.2.2
+feedparser==6.0.10
+scipy==1.13.0
+numpy==1.26.0
+apscheduler==3.10.4
+
+================================================================================
+  FIN DE ARCHIVO: requirements.txt
+================================================================================

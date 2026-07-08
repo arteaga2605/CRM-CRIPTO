@@ -466,6 +466,42 @@ class Notification(Base):
     def __repr__(self):
         return f"<Notification({self.type}: {self.message[:50]})>"
 
+# ─── INVERSIONES DEPORTIVAS (MÓDULO AISLADO) ───
+class TipoMercadoDeportivo(enum.Enum):
+    EQUIPO = "EQUIPO"
+    RESULTADO = "RESULTADO"
+    ESTADISTICA = "ESTADISTICA"
+
+class EstadoInversionDeportiva(enum.Enum):
+    ABIERTA = "ABIERTA"
+    GANADA = "GANADA"
+    PERDIDA = "PERDIDA"
+    NULA = "NULA"
+
+class InversionDeportiva(Base):
+    __tablename__ = "inversiones_deportivas"
+
+    id = Column(Integer, primary_key=True)
+    deporte = Column(String(50), default="BEISBOL") # Beisbol, Futbol, Baloncesto, etc.
+    tipo_mercado = Column(Enum(TipoMercadoDeportivo), nullable=False)
+    objetivo = Column(String(100), nullable=False) # Nombre de equipo (MAYUS), resultado o estadistica
+    
+    capital_invertido = Column(Numeric(20, 2), nullable=False)
+    ganancia_potencial = Column(Numeric(20, 2), nullable=False)
+    perdida_potencial = Column(Numeric(20, 2), nullable=False)
+    
+    estado = Column(Enum(EstadoInversionDeportiva), default=EstadoInversionDeportiva.ABIERTA)
+    pnl_realizado = Column(Numeric(20, 2), default=0.00)
+    
+    cuota_odds = Column(Numeric(10, 2), nullable=True) # Opcional: cuota decimal o americana
+    notas = Column(Text, default="")
+    
+    fecha_creacion = Column(DateTime, default=datetime.utcnow)
+    fecha_cierre = Column(DateTime, nullable=True)
+
+    def __repr__(self):
+        return f"<InversionDeportiva({self.deporte} - {self.objetivo}: {self.estado.value})>"        
+
 # ─── CONFIGURACION DB ───
 DATABASE_URL = "sqlite:///./crypto_crm.db"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
@@ -2423,6 +2459,7 @@ from streamlit_autorefresh import st_autorefresh
 import time
 from scipy.stats import pearsonr
 import numpy as np
+from deportes import mostrar_pagina_deportes
 
 API_URL = "http://localhost:8000"
 
@@ -2789,6 +2826,7 @@ page = st.sidebar.radio("Navegación", [
     "📈 Análisis y Trading",
     "📰 Noticias",
     "📊 P2P Binance",
+    "⚽ Inversiones Deportivas",
     "⚙️ Configuracion"
 ], label_visibility="hidden")
 
@@ -3917,7 +3955,10 @@ elif page == "📰 Noticias":
     mostrar_pagina_noticias()
     
 elif page == "📊 P2P Binance":
-    mostrar_pagina_p2p()    
+    mostrar_pagina_p2p()  
+
+elif page == "⚽ Inversiones Deportivas":
+    mostrar_pagina_deportes()      
     
 # ═══════════════════════════════════════
 # PÁGINA: CONFIGURACION
@@ -4131,7 +4172,311 @@ settings = Settings()
 ================================================================================
   FIN DE ARCHIVO: config.py
 ================================================================================
+================================================================================
+  ARCHIVO: app/services/deportes_service.py
+================================================================================
+from sqlalchemy.orm import Session
+from sqlalchemy import func
+from datetime import datetime
+from decimal import Decimal
+from typing import List, Dict, Any, Optional
 
+from app.models import InversionDeportiva, TipoMercadoDeportivo, EstadoInversionDeportiva
+
+class DeportesService:
+    def __init__(self, db: Session):
+        self.db = db
+
+    def crear_inversion(self, deporte: str, tipo_mercado: str, objetivo: str,
+                        capital: float, ganancia_pot: float, perdida_pot: float,
+                        cuota: float = None, notas: str = "") -> InversionDeportiva:
+        # Validación y formateo de reglas
+        tipo_enum = TipoMercadoDeportivo[tipo_mercado.upper()]
+        
+        if tipo_enum == TipoMercadoDeportivo.EQUIPO:
+            objetivo_formateado = str(objetivo).strip().upper()
+        elif tipo_enum == TipoMercadoDeportivo.RESULTADO:
+            objetivo_formateado = str(objetivo).strip() # Acepta formatos como "2-1", "105", etc.
+        else: # ESTADISTICA
+            objetivo_formateado = str(objetivo).strip().upper() # Acepta "OVER 8.5 STRIKEOUTS", etc.
+
+        inversion = InversionDeportiva(
+            deporte=deporte.upper(),
+            tipo_mercado=tipo_enum,
+            objetivo=objetivo_formateado,
+            capital_invertido=Decimal(str(capital)),
+            ganancia_potencial=Decimal(str(ganancia_pot)),
+            perdida_potencial=Decimal(str(perdida_pot)),
+            estado=EstadoInversionDeportiva.ABIERTA,
+            pnl_realizado=Decimal("0.00"),
+            cuota_odds=Decimal(str(cuota)) if cuota else None,
+            notas=notas
+        )
+        self.db.add(inversion)
+        self.db.commit()
+        self.db.refresh(inversion)
+        return inversion
+
+    def liquidar_inversion(self, inv_id: int, nuevo_estado: str) -> InversionDeportiva:
+        inv = self.db.query(InversionDeportiva).filter_by(id=inv_id).first()
+        if not inv:
+            raise ValueError("Inversión no encontrada")
+            
+        estado_enum = EstadoInversionDeportiva[nuevo_estado.upper()]
+        inv.estado = estado_enum
+        inv.fecha_cierre = datetime.utcnow()
+        
+        if estado_enum == EstadoInversionDeportiva.GANADA:
+            inv.pnl_realizado = inv.ganancia_potencial
+        elif estado_enum == EstadoInversionDeportiva.PERDIDA:
+            # Se registra como número negativo para la contabilidad
+            inv.pnl_realizado = -abs(inv.perdida_potencial)
+        else: # NULA o ABIERTA
+            inv.pnl_realizado = Decimal("0.00")
+            
+        self.db.commit()
+        self.db.refresh(inv)
+        return inv
+
+    def obtener_resumen_y_estadisticas(self) -> Dict[str, Any]:
+        todas = self.db.query(InversionDeportiva).all()
+        cerradas = [i for i in todas if i.estado in [EstadoInversionDeportiva.GANADA, EstadoInversionDeportiva.PERDIDA]]
+        
+        total_inversiones = len(todas)
+        abiertas = len([i for i in todas if i.estado == EstadoInversionDeportiva.ABIERTA])
+        ganadas = len([i for i in todas if i.estado == EstadoInversionDeportiva.GANADA])
+        perdidas = len([i for i in todas if i.estado == EstadoInversionDeportiva.PERDIDA])
+        
+        capital_en_juego = sum(float(i.capital_invertido) for i in todas if i.estado == EstadoInversionDeportiva.ABIERTA)
+        capital_total_hist = sum(float(i.capital_invertido) for i in todas)
+        pnl_neto = sum(float(i.pnl_realizado) for i in cerradas)
+        
+        win_rate = (ganadas / len(cerradas) * 100) if cerradas else 0.0
+
+        # Análisis por Equipo / Objetivo (Quién genera más ganancias y cuántas veces se invirtió)
+        stats_objetivos = {}
+        for idx in cerradas:
+            obj = idx.objetivo
+            if obj not in stats_objetivos:
+                stats_objetivos[obj] = {"veces": 0, "pnl": 0.0, "ganadas": 0, "perdidas": 0, "deporte": idx.deporte}
+            
+            stats_objetivos[obj]["veces"] += 1
+            stats_objetivos[obj]["pnl"] += float(idx.pnl_realizado)
+            if idx.estado == EstadoInversionDeportiva.GANADA:
+                stats_objetivos[obj]["ganadas"] += 1
+            elif idx.estado == EstadoInversionDeportiva.PERDIDA:
+                stats_objetivos[obj]["perdidas"] += 1
+
+        top_objetivos = sorted(stats_objetivos.items(), key=lambda x: x[1]["pnl"], reverse=True)
+        equipo_mas_rentable = top_objetivos[0] if top_objetivos else ("Ninguno", {"pnl": 0.0, "veces": 0})
+
+        return {
+            "total_inversiones": total_inversiones,
+            "abiertas": abiertas,
+            "ganadas": ganadas,
+            "perdidas": perdidas,
+            "win_rate": round(win_rate, 1),
+            "capital_en_juego": round(capital_en_juego, 2),
+            "capital_total_historico": round(capital_total_hist, 2),
+            "pnl_neto": round(pnl_neto, 2),
+            "equipo_mas_rentable": equipo_mas_rentable[0],
+            "max_ganancia_equipo": round(equipo_mas_rentable[1]["pnl"], 2),
+            "desglose_por_objetivo": [
+                {"objetivo": k, **v} for k, v in stats_objetivos.items()
+            ]
+        }
+================================================================================
+  FIN DE ARCHIVO: app/services/deportes_service.py
+================================================================================
+================================================================================
+  ARCHIVO: app/api/deportes.py
+================================================================================
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+from typing import List, Optional
+from pydantic import BaseModel
+
+from app.models import SessionLocal
+from app.services.deportes_service import DeportesService
+
+router = APIRouter(prefix="/deportes", tags=["Deportes"])
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+class InversionCreate(BaseModel):
+    deporte: str
+    tipo_mercado: str
+    objetivo: str
+    capital: float
+    ganancia_potencial: float
+    perdida_potencial: float
+    cuota: Optional[float] = None
+    notas: Optional[str] = ""
+
+@router.post("/", response_model=dict)
+def crear(inv: InversionCreate, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    try:
+        res = srv.crear_inversion(**inv.dict())
+        return {"id": res.id, "objetivo": res.objetivo, "estado": res.estado.value}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/resumen")
+def resumen(db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    return srv.obtener_resumen_y_estadisticas()
+
+@router.post("/{inv_id}/liquidar")
+def liquidar(inv_id: int, estado: str, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    try:
+        res = srv.liquidar_inversion(inv_id, estado)
+        return {"id": res.id, "nuevo_estado": res.estado.value, "pnl": float(res.pnl_realizado)}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+================================================================================
+  FIN DE ARCHIVO: app/api/deportes.py
+================================================================================
+================================================================================
+  ARCHIVO: dashboard/deportes.py
+================================================================================
+import sys
+import os
+
+# SOLUCIÓN AL ERROR: Incluir la carpeta raíz del proyecto en el path de búsqueda
+# Esto permite que Python encuentre los módulos en 'app/' desde 'dashboard/'
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from sqlalchemy.orm import Session
+from app.models import SessionLocal, InversionDeportiva, EstadoInversionDeportiva
+from app.services.deportes_service import DeportesService
+
+def mostrar_pagina_deportes():
+    st.title("⚽ Inversiones y Apuestas Deportivas")
+    st.markdown("Gestión de capital (*Bankroll*) independiente del portafolio cripto.")
+
+    db = SessionLocal()
+    try:
+        srv = DeportesService(db)
+        stats = srv.obtener_resumen_y_estadisticas()
+
+        # ─── METRICAS PRINCIPALES ───
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("PnL Neto Realizado", f"${stats['pnl_neto']:,.2f}", delta_color="normal")
+        col2.metric("Tasa Aciertos (Win Rate)", f"{stats['win_rate']}%")
+        col3.metric("Capital en Juego", f"${stats['capital_en_juego']:,.2f}")
+        col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"${stats['max_ganancia_equipo']:,.2f}")
+        col5.metric("Total Apuestas", f"{stats['total_inversiones']} ({stats['ganadas']}G / {stats['perdidas']}P)")
+
+        st.divider()
+
+        # ─── FORMULARIO DE REGISTRO ───
+        with st.expander("➕ Registrar Nueva Inversión Deportiva", expanded=False):
+            with st.form("form_deportes"):
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    deporte = st.selectbox("Deporte", ["BEISBOL", "FUTBOL", "BALONCESTO", "TENIS", "OTRO"])
+                    tipo_merc = st.selectbox("Tipo de Mercado", ["EQUIPO", "RESULTADO", "ESTADISTICA"])
+                with c2:
+                    if tipo_merc == "EQUIPO":
+                        objetivo = st.text_input("Nombre del Equipo (Mayúsculas automáticamente)").upper()
+                    elif tipo_merc == "RESULTADO":
+                        objetivo = st.text_input("Resultado (Ej: 2-1, 105, Empate)")
+                    else:
+                        objetivo = st.text_input("Estadística (Ej: OVER 8.5 STRIKEOUTS, +2.5 GOLES)").upper()
+                    
+                    cuota = st.number_input("Cuota / Odds (Opcional)", min_value=0.0, value=1.90, step=0.05)
+                with c3:
+                    capital = st.number_input("Capital Invertido ($)", min_value=1.0, value=20.0, step=5.0)
+                    ganancia_pot = st.number_input("Ganancia Potencial ($)", min_value=0.0, value=18.0, step=5.0)
+                    perdida_pot = st.number_input("Pérdida Potencial ($)", min_value=0.0, value=20.0, step=5.0)
+                
+                notas = st.text_input("Notas o Análisis del partido")
+                
+                if st.form_submit_button("Registrar Inversión"):
+                    if not objetivo:
+                        st.error("Por favor ingresa un equipo o resultado.")
+                    else:
+                        srv.crear_inversion(deporte, tipo_merc, objetivo, capital, ganancia_pot, perdida_pot, cuota, notas)
+                        st.success(f"Inversión registrada para: {objetivo}")
+                        st.rerun()
+
+        # ─── GRÁFICOS ANALÍTICOS ───
+        desglose = stats["desglose_por_objetivo"]
+        if desglose:
+            df_desglose = pd.DataFrame(desglose)
+            
+            g_col1, g_col2 = st.columns(2)
+            with g_col1:
+                st.subheader("🏆 Ganancias y Pérdidas por Equipo/Objetivo")
+                fig_pnl = px.bar(
+                    df_desglose.sort_values("pnl", ascending=True),
+                    x="pnl", y="objetivo", orientation="h",
+                    color="pnl", color_continuous_scale="RdYlGn",
+                    text="pnl", title="Rendimiento Acumulado (USD)"
+                )
+                fig_pnl.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
+                st.plotly_chart(fig_pnl, use_container_width=True)
+                
+            with g_col2:
+                st.subheader("📊 Frecuencia de Inversión por Deporte/Equipo")
+                fig_veces = px.bar(
+                    df_desglose.sort_values("veces", ascending=False),
+                    x="objetivo", y="veces", color="deporte",
+                    text="veces", title="Cantidad de Apuestas Realizadas"
+                )
+                st.plotly_chart(fig_veces, use_container_width=True)
+        else:
+            st.info("No hay estadísticas históricas cerradas aún para generar gráficos.")
+
+        # ─── TABLA DE LIQUIDACIÓN DE APUESTAS ABIERTAS ───
+        st.subheader("⏳ Inversiones Abiertas (Pendientes por Resultado)")
+        abiertas_db = db.query(InversionDeportiva).filter_by(estado=EstadoInversionDeportiva.ABIERTA).all()
+        if abiertas_db:
+            for inv in abiertas_db:
+                with st.container():
+                    r1, r2, r3, r4 = st.columns([2, 1, 2, 2])
+                    with r1:
+                        st.markdown(f"**{inv.deporte}** | `{inv.tipo_mercado.value}`")
+                        st.markdown(f"### {inv.objetivo}")
+                    with r2:
+                        st.metric("Capital", f"${inv.capital_invertido}")
+                    with r3:
+                        st.write(f"🟢 **A ganar:** +${inv.ganancia_potencial}")
+                        st.write(f"🔴 **A perder:** -${inv.perdida_potencial}")
+                    with r4:
+                        st.write("Liq. Resultado:")
+                        b_col1, b_col2, b_col3 = st.columns(3)
+                        if b_col1.button("✅ Ganó", key=f"g_{inv.id}"):
+                            srv.liquidar_inversion(inv.id, "GANADA")
+                            st.rerun()
+                        if b_col2.button("❌ Perdió", key=f"p_{inv.id}"):
+                            srv.liquidar_inversion(inv.id, "PERDIDA")
+                            st.rerun()
+                        if b_col3.button("⚪ Nulo", key=f"n_{inv.id}"):
+                            srv.liquidar_inversion(inv.id, "NULA")
+                            st.rerun()
+                st.divider()
+        else:
+            st.write("No tienes inversiones deportivas abiertas en este momento.")
+
+    finally:
+        db.close()
+
+================================================================================
+  FIN DE ARCHIVO: dashboard/deportes.py
+================================================================================
 ================================================================================
   ARCHIVO: requirements.txt
 ================================================================================

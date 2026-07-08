@@ -14,6 +14,7 @@ from streamlit_autorefresh import st_autorefresh
 import time
 from scipy.stats import pearsonr
 import numpy as np
+from deportes import mostrar_pagina_deportes
 
 API_URL = "http://localhost:8000"
 
@@ -396,6 +397,7 @@ page = st.sidebar.radio("Navegación", [
     "📈 Análisis y Trading",
     "📰 Noticias",
     "📊 P2P Binance",
+    "⚽ Inversiones Deportivas",
     "⚙️ Configuracion"
 ], label_visibility="hidden")
 
@@ -1562,6 +1564,9 @@ elif page == "📰 Noticias":
     
 elif page == "📊 P2P Binance":
     mostrar_pagina_p2p()    
+    
+elif page == "⚽ Inversiones Deportivas":
+    mostrar_pagina_deportes()    
     
 # ═══════════════════════════════════════
 # PÁGINA: CONFIGURACION

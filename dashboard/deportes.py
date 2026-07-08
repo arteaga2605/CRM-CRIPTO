@@ -1,8 +1,8 @@
 import sys
 import os
+from datetime import datetime, timedelta
 
-# SOLUCIÓN AL ERROR: Incluir la carpeta raíz del proyecto en el path de búsqueda
-# Esto permite que Python encuentre los módulos en 'app/' desde 'dashboard/'
+# Incluir la carpeta raíz del proyecto en el path de búsqueda
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import streamlit as st
@@ -31,6 +31,41 @@ def mostrar_pagina_deportes():
         col5.metric("Total Apuestas", f"{stats['total_inversiones']} ({stats['ganadas']}G / {stats['perdidas']}P)")
 
         st.divider()
+
+        # ─── REPORTE POR FECHAS ───
+        st.subheader("📅 Generar Reporte de Resultados")
+        with st.expander("Generar Reporte (Semanal, Mensual o Personalizado)", expanded=False):
+            col_d1, col_d2, col_d3 = st.columns([2, 2, 1])
+            with col_d1:
+                # Por defecto selecciona los últimos 7 días
+                fecha_inicio_input = st.date_input("Fecha Inicio", value=datetime.today().date() - timedelta(days=7))
+            with col_d2:
+                fecha_fin_input = st.date_input("Fecha Fin", value=datetime.today().date())
+            with col_d3:
+                st.write("") # Espaciador
+                st.write("") # Espaciador
+                generar_reporte = st.button("📊 Generar Reporte", use_container_width=True)
+            
+            if generar_reporte:
+                if fecha_inicio_input > fecha_fin_input:
+                    st.error("La fecha de inicio no puede ser posterior a la fecha de fin.")
+                else:
+                    # Convertir a datetime exactos para la consulta a la BD
+                    dt_inicio = datetime.combine(fecha_inicio_input, datetime.min.time())
+                    dt_fin = datetime.combine(fecha_fin_input, datetime.max.time())
+                    
+                    reporte = srv.obtener_reporte_por_fechas(dt_inicio, dt_fin)
+                    
+                    st.markdown("### 📋 Resultados del Reporte")
+                    r_col1, r_col2, r_col3, r_col4 = st.columns(4)
+                    r_col1.metric("Total Inversiones", reporte["total_inversiones"])
+                    r_col2.metric("✅ Ganadas", reporte["ganadas"])
+                    r_col3.metric("❌ Perdidas", reporte["perdidas"])
+                    
+                    pnl_valor = reporte['pnl_total']
+                    r_col4.metric("💰 PnL Total", f"${pnl_valor:,.2f}", 
+                                  delta=f"${pnl_valor:,.2f}" if pnl_valor >= 0 else f"-${abs(pnl_valor):,.2f}",
+                                  delta_color="normal" if pnl_valor >= 0 else "inverse")
 
         # ─── FORMULARIO DE REGISTRO ───
         with st.expander("➕ Registrar Nueva Inversión Deportiva", expanded=False):
@@ -63,7 +98,7 @@ def mostrar_pagina_deportes():
                         st.success(f"Inversión registrada para: {objetivo}")
                         st.rerun()
 
-        # ─── GRÁFICOS ANALÍTICOS ───
+        # ─── GRÁFICOS ANALÍTICOS (BARRA DE CAPITAL Y GANANCIAS) ───
         desglose = stats["desglose_por_objetivo"]
         if desglose:
             df_desglose = pd.DataFrame(desglose)

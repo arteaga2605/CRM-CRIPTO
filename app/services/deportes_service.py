@@ -108,3 +108,24 @@ class DeportesService:
                 {"objetivo": k, **v} for k, v in stats_objetivos.items()
             ]
         }
+
+    def obtener_reporte_por_fechas(self, fecha_inicio: datetime, fecha_fin: datetime) -> Dict[str, Any]:
+        """
+        Filtra las inversiones cerradas por fecha de cierre y devuelve las estadísticas.
+        """
+        inversiones = self.db.query(InversionDeportiva).filter(
+            InversionDeportiva.estado.in_([EstadoInversionDeportiva.GANADA, EstadoInversionDeportiva.PERDIDA]),
+            InversionDeportiva.fecha_cierre >= fecha_inicio,
+            InversionDeportiva.fecha_cierre <= fecha_fin
+        ).all()
+
+        ganadas = len([i for i in inversiones if i.estado == EstadoInversionDeportiva.GANADA])
+        perdidas = len([i for i in inversiones if i.estado == EstadoInversionDeportiva.PERDIDA])
+        pnl_total = sum(float(i.pnl_realizado) for i in inversiones)
+
+        return {
+            "ganadas": ganadas,
+            "perdidas": perdidas,
+            "pnl_total": round(pnl_total, 2),
+            "total_inversiones": len(inversiones)
+        }

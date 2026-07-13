@@ -807,6 +807,28 @@ elif page == "👥 Clientes":
                     else:
                         st.error("No se pudo obtener precio de Binance para este símbolo")
 
+        # ========== CORREGIR CAPITAL MANUALMENTE ==========
+        st.divider()
+        st.subheader("🛠️ Corregir Capital Invertido Manualmente")
+        st.info("Usa esta opción si el sistema calculó mal el capital invertido histórico y necesitas ajustarlo.")
+        col_corr1, col_corr2, col_corr3 = st.columns([2, 2, 1])
+        with col_corr1:
+            sym_corregir = st.selectbox("Selecciona moneda a corregir", [c["symbol"] for c in clientes] if clientes else [], key="sym_corr")
+        with col_corr2:
+            nueva_inv = st.number_input("Nuevo Capital Invertido ($)", min_value=0.0, step=1.0, format="%.2f")
+        with col_corr3:
+            st.write("")
+            st.write("")
+            if st.button("Aplicar Corrección", type="primary"):
+                if sym_corregir:
+                    resp = post(f"/clientes/{sym_corregir}/corregir-inversion", {"nueva_inversion": nueva_inv})
+                    if resp:
+                        st.success(f"Capital de {sym_corregir} corregido a ${nueva_inv:.2f}")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Error al aplicar la corrección.")
+
         # ========== MOSTRAR LOTES (FIFO) ==========
         if selected_symbol:
             st.subheader(f"📦 Lotes de {selected_symbol} (FIFO)")
@@ -1396,8 +1418,7 @@ elif page == "🔥 Tendencias de Mercado":
 elif page == "📢 Eventos Binance":
     st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
     st.markdown("""
-    **⚠️ Actualización automática desactivada**  
-    Debido a restricciones técnicas (bloqueo de scraping por parte de Binance), esta sección ya no intenta obtener eventos de forma automática.
+    **⚠️ Actualización automática desactivada** Debido a restricciones técnicas (bloqueo de scraping por parte de Binance), esta sección ya no intenta obtener eventos de forma automática.
     
     Para estar al día de los últimos lanzamientos (Launchpool, Megadrop, nuevos listados), visita directamente la página oficial de anuncios:
     """)

@@ -82,7 +82,6 @@ class CRMService:
         if not cliente:
             raise ValueError(f"Cliente {symbol} no encontrado")
 
-        # CONTROL DE SEGURIDAD: Evita que Decimal(str(None)) rompa el backend con Error 500
         if precio is None or str(precio).strip().lower() in ["none", "null", ""]:
             print(f"[WARN] Precio no disponible o invalido para {symbol}. Se omite actualizacion de mercado.")
             return cliente
@@ -104,6 +103,29 @@ class CRMService:
                 cliente.pnl_total = cliente.valor_mercado - costo_total
                 cliente.roi_porcentaje = (cliente.pnl_total / costo_total) * Decimal("100")
 
+        self.db.commit()
+        self.actualizar_estado_cliente(symbol)
+        return cliente
+
+    def corregir_inversion_total(self, symbol: str, nueva_inversion: float) -> ClienteCripto:
+        """Permite sobreescribir manualmente el capital invertido en caso de desfase."""
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no encontrado")
+        
+        cliente.inversion_total = Decimal(str(nueva_inversion))
+        
+        precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
+        cantidad = cliente.cantidad_total if cliente.cantidad_total else Decimal("0")
+        cliente.valor_mercado = precio_actual * cantidad
+        
+        if cliente.inversion_total > 0:
+            cliente.pnl_total = cliente.valor_mercado - cliente.inversion_total
+            cliente.roi_porcentaje = (cliente.pnl_total / cliente.inversion_total) * Decimal("100")
+        else:
+            cliente.pnl_total = cliente.valor_mercado
+            cliente.roi_porcentaje = Decimal("0")
+            
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
         return cliente
@@ -234,6 +256,7 @@ class CRMService:
         cliente.cantidad_total = nueva_cantidad
         cliente.pnl_total = (cliente.pnl_total if cliente.pnl_total else Decimal("0")) + pnl_total
 
+        # CORRECCIÓN CONTABLE: Al vender, se descarga el capital base de los lotes restantes
         if nueva_cantidad > 0:
             lotes_restantes = self.db.query(LoteCompra).filter(
                 LoteCompra.cliente_id == cliente.id,
@@ -241,8 +264,10 @@ class CRMService:
             ).all()
             inversion_restante = sum(l.cantidad_restante * l.precio_unitario for l in lotes_restantes)
             cliente.costo_promedio = inversion_restante / nueva_cantidad
+            cliente.inversion_total = inversion_restante
         else:
             cliente.costo_promedio = Decimal("0")
+            cliente.inversion_total = Decimal("0")
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
@@ -379,6 +404,7 @@ class CRMService:
                 cliente.cantidad_total = nueva_cantidad
                 cliente.pnl_total += pnl_total
 
+                # CORRECCIÓN CONTABLE
                 if nueva_cantidad > 0:
                     lotes_restantes = self.db.query(LoteCompra).filter(
                         LoteCompra.cliente_id == cliente.id,
@@ -386,8 +412,10 @@ class CRMService:
                     ).all()
                     inversion_restante = sum(l.cantidad_restante * l.precio_unitario for l in lotes_restantes)
                     cliente.costo_promedio = inversion_restante / nueva_cantidad
+                    cliente.inversion_total = inversion_restante
                 else:
                     cliente.costo_promedio = Decimal("0")
+                    cliente.inversion_total = Decimal("0")
 
                 inter.pnl_realizado = pnl_total
 

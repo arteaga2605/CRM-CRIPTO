@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from decimal import Decimal
+from pydantic import BaseModel
 
 from app.models import SessionLocal, EstadoCliente
 from app.schemas import ClienteCriptoCreate, ClienteCriptoUpdate, ClienteCriptoResponse
@@ -16,6 +17,10 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# ESQUEMA NUEVO PARA CORRECCION MANUAL
+class CorreccionInversion(BaseModel):
+    nueva_inversion: float
 
 @router.post("/", response_model=ClienteCriptoResponse)
 def crear_cliente(cliente: ClienteCriptoCreate, db: Session = Depends(get_db)):
@@ -112,3 +117,13 @@ def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(g
             raise HTTPException(status_code=400, detail=f"No se pudo obtener precio de {symbol} desde Binance")
     cliente_actualizado = crm.actualizar_precio_mercado(symbol, precio)
     return cliente_actualizado
+
+# ENDPOINT NUEVO PARA CORRECCION MANUAL DE CAPITAL
+@router.post("/{symbol}/corregir-inversion")
+def corregir_inversion(symbol: str, data: CorreccionInversion, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        cliente_actualizado = crm.corregir_inversion_total(symbol, data.nueva_inversion)
+        return cliente_actualizado
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))

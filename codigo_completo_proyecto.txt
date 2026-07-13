@@ -806,7 +806,6 @@ class CRMService:
         if not cliente:
             raise ValueError(f"Cliente {symbol} no encontrado")
 
-        # CONTROL DE SEGURIDAD: Evita que Decimal(str(None)) rompa el backend con Error 500
         if precio is None or str(precio).strip().lower() in ["none", "null", ""]:
             print(f"[WARN] Precio no disponible o invalido para {symbol}. Se omite actualizacion de mercado.")
             return cliente
@@ -828,6 +827,29 @@ class CRMService:
                 cliente.pnl_total = cliente.valor_mercado - costo_total
                 cliente.roi_porcentaje = (cliente.pnl_total / costo_total) * Decimal("100")
 
+        self.db.commit()
+        self.actualizar_estado_cliente(symbol)
+        return cliente
+
+    def corregir_inversion_total(self, symbol: str, nueva_inversion: float) -> ClienteCripto:
+        """Permite sobreescribir manualmente el capital invertido en caso de desfase."""
+        cliente = self.obtener_cliente(symbol)
+        if not cliente:
+            raise ValueError(f"Cliente {symbol} no encontrado")
+        
+        cliente.inversion_total = Decimal(str(nueva_inversion))
+        
+        precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
+        cantidad = cliente.cantidad_total if cliente.cantidad_total else Decimal("0")
+        cliente.valor_mercado = precio_actual * cantidad
+        
+        if cliente.inversion_total > 0:
+            cliente.pnl_total = cliente.valor_mercado - cliente.inversion_total
+            cliente.roi_porcentaje = (cliente.pnl_total / cliente.inversion_total) * Decimal("100")
+        else:
+            cliente.pnl_total = cliente.valor_mercado
+            cliente.roi_porcentaje = Decimal("0")
+            
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
         return cliente
@@ -958,6 +980,7 @@ class CRMService:
         cliente.cantidad_total = nueva_cantidad
         cliente.pnl_total = (cliente.pnl_total if cliente.pnl_total else Decimal("0")) + pnl_total
 
+        # CORRECCIÓN CONTABLE: Al vender, se descarga el capital base de los lotes restantes
         if nueva_cantidad > 0:
             lotes_restantes = self.db.query(LoteCompra).filter(
                 LoteCompra.cliente_id == cliente.id,
@@ -965,8 +988,10 @@ class CRMService:
             ).all()
             inversion_restante = sum(l.cantidad_restante * l.precio_unitario for l in lotes_restantes)
             cliente.costo_promedio = inversion_restante / nueva_cantidad
+            cliente.inversion_total = inversion_restante
         else:
             cliente.costo_promedio = Decimal("0")
+            cliente.inversion_total = Decimal("0")
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
@@ -1103,6 +1128,7 @@ class CRMService:
                 cliente.cantidad_total = nueva_cantidad
                 cliente.pnl_total += pnl_total
 
+                # CORRECCIÓN CONTABLE
                 if nueva_cantidad > 0:
                     lotes_restantes = self.db.query(LoteCompra).filter(
                         LoteCompra.cliente_id == cliente.id,
@@ -1110,8 +1136,10 @@ class CRMService:
                     ).all()
                     inversion_restante = sum(l.cantidad_restante * l.precio_unitario for l in lotes_restantes)
                     cliente.costo_promedio = inversion_restante / nueva_cantidad
+                    cliente.inversion_total = inversion_restante
                 else:
                     cliente.costo_promedio = Decimal("0")
+                    cliente.inversion_total = Decimal("0")
 
                 inter.pnl_realizado = pnl_total
 
@@ -2021,6 +2049,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from decimal import Decimal
+from pydantic import BaseModel
 
 from app.models import SessionLocal, EstadoCliente
 from app.schemas import ClienteCriptoCreate, ClienteCriptoUpdate, ClienteCriptoResponse
@@ -2035,6 +2064,10 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# ESQUEMA NUEVO PARA CORRECCION MANUAL
+class CorreccionInversion(BaseModel):
+    nueva_inversion: float
 
 @router.post("/", response_model=ClienteCriptoResponse)
 def crear_cliente(cliente: ClienteCriptoCreate, db: Session = Depends(get_db)):
@@ -2131,6 +2164,16 @@ def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(g
             raise HTTPException(status_code=400, detail=f"No se pudo obtener precio de {symbol} desde Binance")
     cliente_actualizado = crm.actualizar_precio_mercado(symbol, precio)
     return cliente_actualizado
+
+# ENDPOINT NUEVO PARA CORRECCION MANUAL DE CAPITAL
+@router.post("/{symbol}/corregir-inversion")
+def corregir_inversion(symbol: str, data: CorreccionInversion, db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    try:
+        cliente_actualizado = crm.corregir_inversion_total(symbol, data.nueva_inversion)
+        return cliente_actualizado
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 ================================================================================
   FIN DE ARCHIVO: app/api/clientes.py
 ================================================================================
@@ -2548,6 +2591,10 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
 # FUNCIONES PARA ANÁLISIS TÉCNICO
 # ═══════════════════════════════════════
 def obtener_velas_binance(symbol, interval="1d", limit=30):
+    """
+    Obtiene velas OHLCV directamente desde Binance.
+    Por defecto: interval="1d", limit=30 (último mes)
+    """
     try:
         pair = f"{symbol.upper()}USDT"
         interval_map = {
@@ -2580,6 +2627,7 @@ def obtener_velas_binance(symbol, interval="1d", limit=30):
         return None
 
 def encontrar_soportes_resistencias(velas, num_niveles=3):
+    """Encuentra soportes (mínimos locales) y resistencias (máximos locales) con ventana dinámica."""
     highs = [v["high"] for v in velas]
     lows = [v["low"] for v in velas]
     n = len(velas)
@@ -2702,10 +2750,12 @@ CATEGORIAS = [
 # ═══════════════════════════════════════
 st.markdown("""
 <style>
+    /* Fondo del sidebar */
     [data-testid="stSidebar"] {
         background: linear-gradient(135deg, #1e2a3a 0%, #0f1724 100%);
         border-right: 1px solid #2d3e50;
     }
+    /* Título principal */
     [data-testid="stSidebar"] .css-1d391kg {
         color: #ffffff;
         font-size: 1.8rem;
@@ -2715,6 +2765,7 @@ st.markdown("""
         padding-bottom: 0.5rem;
         margin-bottom: 1rem;
     }
+    /* Subtítulo */
     [data-testid="stSidebar"] .css-1wivap2 {
         color: #b0c4de;
         font-size: 0.9rem;
@@ -2722,6 +2773,7 @@ st.markdown("""
         margin-top: -0.5rem;
         margin-bottom: 1.5rem;
     }
+    /* Opciones del radio */
     [data-testid="stSidebar"] div[role="radiogroup"] label {
         background-color: rgba(255,255,255,0.05);
         border-radius: 12px;
@@ -2732,20 +2784,24 @@ st.markdown("""
         font-weight: 500;
         font-size: 1rem;
     }
+    /* Hover sobre opciones */
     [data-testid="stSidebar"] div[role="radiogroup"] label:hover {
         background-color: rgba(255,215,0,0.2);
         color: #ffd700;
         transform: translateX(5px);
     }
+    /* Opción seleccionada */
     [data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stMarkdownContainer"]:has(input:checked) {
         background-color: #ffd700;
         color: #0f1724;
         font-weight: bold;
         box-shadow: 0 2px 8px rgba(255,215,0,0.3);
     }
+    /* Radio circle oculto (personalizamos con background) */
     [data-testid="stSidebar"] div[role="radiogroup"] input {
         accent-color: #ffd700;
     }
+    /* Checkbox de actualización automática */
     [data-testid="stSidebar"] .stCheckbox {
         background: #2d3e50;
         padding: 6px 12px;
@@ -2753,10 +2809,12 @@ st.markdown("""
         margin: 10px 0;
         color: white;
     }
+    /* Selectbox dentro del sidebar */
     [data-testid="stSidebar"] .stSelectbox {
         background: #2d3e50;
         border-radius: 8px;
     }
+    /* Info box */
     [data-testid="stSidebar"] .stAlert {
         background: #2d3e50;
         border-left: 4px solid #ffd700;
@@ -2771,6 +2829,7 @@ st.markdown("""
 st.sidebar.title("🪙 Crypto CRM")
 st.sidebar.markdown("*Tratando criptomonedas como clientes*")
 
+# Control de actualización automática
 st.sidebar.subheader("⚡ Actualización automática")
 auto_refresh = st.sidebar.checkbox("🔄 Activar actualización automática", value=False)
 if auto_refresh:
@@ -2863,6 +2922,8 @@ if page == "🏠 Dashboard":
 
         st.divider()
         
+        # ========== NUEVA SECCIÓN P2P CON TOP 20 CRIPTO ==========
+        # ========== NUEVA SECCIÓN P2P CON RECOMENDACIÓN ==========
         st.subheader("📊 Oportunidad P2P en tiempo real")
         
         @st.cache_data(ttl=3600)
@@ -2898,7 +2959,10 @@ if page == "🏠 Dashboard":
                     buy_price = p2p_data.get("buy_price", 0)
                     sell_price = p2p_data.get("sell_price", 0)
                     spread = p2p_data.get("spread_pct", 0)
+
+                    # Verificar si hay datos válidos (ambos precios > 0)
                     tiene_datos = buy_price > 0 and sell_price > 0
+
                     if tiene_datos:
                         col1p, col2p, col3p = st.columns(3)
                         with col1p:
@@ -2925,35 +2989,46 @@ if page == "🏠 Dashboard":
                                 <p style="color: #b0c4de; margin:0;">{asset_sel}/{fiat_sel}</p>
                             </div>
                             """, unsafe_allow_html=True)
+
+                        # ========== RECOMENDACIÓN ==========
                         st.divider()
                         st.subheader("💡 Recomendación P2P")
+                        
                         ganancia_por_unidad = sell_price - buy_price
                         ganancia_pct = (ganancia_por_unidad / buy_price) * 100 if buy_price > 0 else 0
+                        
                         if ganancia_pct > 1.0:
+                            recomendacion = "COMPRAR"
                             color = "#00ff88"
                             mensaje = f"✅ **Recomendado COMPRAR** a ${buy_price:.2f} y vender a ${sell_price:.2f} en spot/P2P."
                             detalle = f"Ganancia potencial: ${ganancia_por_unidad:.2f} por unidad ({ganancia_pct:.2f}%)"
                         elif ganancia_pct < -1.0:
+                            recomendacion = "VENDER"
                             color = "#ff4444"
                             mensaje = f"✅ **Recomendado VENDER** a ${sell_price:.2f} (actualmente está por encima del precio de compra)."
                             detalle = f"Puedes vender ahora y recomprar cuando baje. Diferencia: ${abs(ganancia_por_unidad):.2f} por unidad ({abs(ganancia_pct):.2f}%)"
                         else:
+                            recomendacion = "NEUTRO"
                             color = "#ffd700"
                             mensaje = f"⚠️ **Spread bajo ({ganancia_pct:.2f}%). No hay oportunidad clara.**"
                             detalle = "Espera a que el spread supere el 1% para obtener una ganancia significativa."
+                        
                         st.markdown(f"""
                         <div style="background-color: #1e2a3a; padding: 20px; border-radius: 10px; border-left: 4px solid {color};">
                             <h4 style="color: {color}; margin:0;">{mensaje}</h4>
                             <p style="color: #b0c4de; margin:5px 0 0 0;">{detalle}</p>
                         </div>
                         """, unsafe_allow_html=True)
+                        
                         col_r1, col_r2, col_r3 = st.columns(3)
                         col_r1.metric("Precio Compra", f"${buy_price:.2f}")
                         col_r2.metric("Precio Venta", f"${sell_price:.2f}")
                         col_r3.metric("Ganancia por unidad", f"${ganancia_por_unidad:.2f}", 
                                       delta=f"{ganancia_pct:.2f}%" if abs(ganancia_pct) > 0 else None,
                                       delta_color="normal" if ganancia_pct > 0 else "inverse")
+                        # ========== FIN RECOMENDACIÓN ==========
                     else:
+                        # No hay datos para esta moneda/fiat
                         st.warning(f"⚠️ No hay anuncios activos para **{asset_sel}/{fiat_sel}** en este momento.")
                         st.info("Prueba con otra moneda o fiat, o actualiza más tarde.")
                 else:
@@ -2964,6 +3039,8 @@ if page == "🏠 Dashboard":
             st.warning(f"Error al obtener datos P2P: {e}")
 
         st.divider()
+        # ========== FIN SECCIÓN P2P ==========
+        # ========== FIN SECCIÓN P2P ==========
         
         st.subheader("📊 Ganancias y Pérdidas Realizadas")
         pnl_summary = fetch("/analytics/realized-pnl-summary")
@@ -3021,9 +3098,8 @@ if page == "🏠 Dashboard":
                     st.caption(f"Accion sugerida: {alerta['accion_sugerida']}")
         else:
             st.success("No hay alertas activas. Todo en orden! 🎉")
-
 # ═══════════════════════════════════════
-# PÁGINA: CLIENTES
+# PÁGINA: CLIENTES (con precio promedio sin fee y PnL ajustado)
 # ═══════════════════════════════════════
 elif page == "👥 Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
@@ -3035,6 +3111,7 @@ elif page == "👥 Clientes":
     - **Los precios se actualizan automáticamente con los datos de Binance cada hora, o manualmente con los botones de abajo.**
     """)
 
+    # ========== ACTUALIZAR TODOS ==========
     if st.button("🔄 Actualizar todos los precios desde Binance"):
         with st.spinner("Actualizando precios..."):
             clientes_actualizar = fetch("/clientes/")
@@ -3048,11 +3125,13 @@ elif page == "👥 Clientes":
                     else:
                         st.warning(f"No se pudo obtener precio para {c['symbol']}")
                 st.success("¡Precios actualizados correctamente!")
+                # Forzar recarga completa
                 st.cache_data.clear()
                 st.rerun()
             else:
                 st.error("No se pudieron obtener los clientes")
 
+    # ========== OBTENER CLIENTES ==========
     clientes = fetch("/clientes/")
     if not clientes:
         st.warning("No hay clientes registrados. Crea uno nuevo en la pestaña '➕ Nuevo Cliente'")
@@ -3069,12 +3148,14 @@ elif page == "👥 Clientes":
             cantidad_total = float(c.get("cantidad_total", 0))
             precio_actual = float(c.get("precio_actual", 0))
             
+            # Interacciones de compra para precio promedio sin fee
             interacciones = fetch(f"/interacciones/cliente/{symbol}")
             compras = [i for i in interacciones if i.get("tipo") == "compra"] if interacciones else []
             suma_cantidad = sum(float(i["cantidad"]) for i in compras) if compras else 0
             suma_precio_cantidad = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in compras) if compras else 0
             precio_promedio_sin_fee = suma_precio_cantidad / suma_cantidad if suma_cantidad > 0 else 0
             
+            # FIFO (con fee)
             lotes_cliente = lotes_data.get(symbol, [])
             cantidad_restante_fifo = 0.0
             costo_total_fifo = 0.0
@@ -3085,7 +3166,10 @@ elif page == "👥 Clientes":
             
             valor_actual_fifo = cantidad_restante_fifo * precio_actual
             pnl_no_realizado_fifo = valor_actual_fifo - costo_total_fifo
+            
+            # PnL sin fee
             pnl_no_realizado_sin_fee = cantidad_total * (precio_actual - precio_promedio_sin_fee)
+            
             costo_prom_con_fee = float(c.get("costo_promedio", 0))
 
             df_data.append({
@@ -3163,6 +3247,7 @@ elif page == "👥 Clientes":
                             st.error(f"Error actualizando {symbol}")
             st.rerun()
 
+        # ========== ELIMINAR CLIENTE ==========
         st.divider()
         st.subheader("🗑️ Eliminar Cliente")
         col_del1, col_del2 = st.columns([3, 1])
@@ -3182,7 +3267,9 @@ elif page == "👥 Clientes":
                             st.rerun()
                         else:
                             st.error("Error al eliminar cliente")
+        # ======================================
 
+        # ========== ACTUALIZAR PRECIO INDIVIDUAL (con validación) ==========
         st.subheader("Actualizar Precio Individual y Ver Detalle FIFO")
         col_sel, col_btn = st.columns([3,1])
         with col_sel:
@@ -3193,17 +3280,44 @@ elif page == "👥 Clientes":
                     precio_real = obtener_precio_real(selected_symbol)
                     if precio_real > 0:
                         with st.spinner(f"Actualizando precio de {selected_symbol}..."):
-                            resp = post(f"/clientes/{selected_symbol}/actualizar-precio", {"precio": precio_real})
-                            if resp:
-                                nuevo_precio = resp.get("precio_actual", 0)
-                                st.success(f"✅ Precio de {selected_symbol} actualizado a ${nuevo_precio:.8f}")
-                                st.cache_data.clear()
-                                st.rerun()
-                            else:
-                                st.error("Error al actualizar")
+                            try:
+                                r = requests.post(f"{API_URL}/clientes/{selected_symbol}/actualizar-precio", json={"precio": precio_real})
+                                if r.status_code == 200:
+                                    resp = r.json()
+                                    nuevo_precio = resp.get("precio_actual", 0)
+                                    st.success(f"✅ Precio de {selected_symbol} actualizado a ${nuevo_precio:.8f}")
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
+                            except Exception as e:
+                                st.error(f"❌ Excepción: {e}")
                     else:
                         st.error("No se pudo obtener precio de Binance para este símbolo")
 
+        # ========== CORREGIR CAPITAL MANUALMENTE ==========
+        st.divider()
+        st.subheader("🛠️ Corregir Capital Invertido Manualmente")
+        st.info("Usa esta opción si el sistema calculó mal el capital invertido histórico y necesitas ajustarlo.")
+        col_corr1, col_corr2, col_corr3 = st.columns([2, 2, 1])
+        with col_corr1:
+            sym_corregir = st.selectbox("Selecciona moneda a corregir", [c["symbol"] for c in clientes] if clientes else [], key="sym_corr")
+        with col_corr2:
+            nueva_inv = st.number_input("Nuevo Capital Invertido ($)", min_value=0.0, step=1.0, format="%.2f")
+        with col_corr3:
+            st.write("")
+            st.write("")
+            if st.button("Aplicar Corrección", type="primary"):
+                if sym_corregir:
+                    resp = post(f"/clientes/{sym_corregir}/corregir-inversion", {"nueva_inversion": nueva_inv})
+                    if resp:
+                        st.success(f"Capital de {sym_corregir} corregido a ${nueva_inv:.2f}")
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.error("Error al aplicar la corrección.")
+
+        # ========== MOSTRAR LOTES (FIFO) ==========
         if selected_symbol:
             st.subheader(f"📦 Lotes de {selected_symbol} (FIFO)")
             lotes_cliente = fetch(f"/lotes/cliente/{selected_symbol}")
@@ -3220,6 +3334,7 @@ elif page == "👥 Clientes":
             else:
                 st.info("No hay lotes activos para este cliente.")
 
+    # ========== NUEVO CLIENTE ==========
     with st.expander("➕ Nuevo Cliente"):
         with st.form("nuevo_cliente"):
             symbol = st.text_input("Symbol (ej: BTC, ETH)").upper()
@@ -3791,8 +3906,7 @@ elif page == "🔥 Tendencias de Mercado":
 elif page == "📢 Eventos Binance":
     st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
     st.markdown("""
-    **⚠️ Actualización automática desactivada**  
-    Debido a restricciones técnicas (bloqueo de scraping por parte de Binance), esta sección ya no intenta obtener eventos de forma automática.
+    **⚠️ Actualización automática desactivada** Debido a restricciones técnicas (bloqueo de scraping por parte de Binance), esta sección ya no intenta obtener eventos de forma automática.
     
     Para estar al día de los últimos lanzamientos (Launchpool, Megadrop, nuevos listados), visita directamente la página oficial de anuncios:
     """)
@@ -3802,6 +3916,7 @@ elif page == "📢 Eventos Binance":
     )
     st.info("Puedes revisar manualmente los anuncios y luego registrar tus oportunidades o tareas en el CRM.")
     
+    # Mostrar eventos antiguos si existen (por si quedaron en la BD)
     eventos = fetch("/binance-events?limit=10")
     if eventos and isinstance(eventos, list) and len(eventos) > 0:
         with st.expander("📦 Eventos anteriores (guardados en la base de datos)"):
@@ -3825,6 +3940,7 @@ elif page == "📈 Análisis y Trading":
     
     tab_analisis, tab_historial = st.tabs(["📊 Análisis Técnico", "📜 Historial de Transacciones"])
     
+    # ========== PESTAÑA 1: ANÁLISIS TÉCNICO ==========
     with tab_analisis:
         st.subheader("Análisis de Soportes y Resistencias")
         col1, col2 = st.columns(2)
@@ -3853,7 +3969,7 @@ elif page == "📈 Análisis y Trading":
                     intervalo = "1w"
                     limite = 12
                     periodo_texto = "últimos 3 meses (velas semanales)"
-                else:
+                else:  # "1M (Mes)"
                     intervalo = "1d"
                     limite = 30
                     periodo_texto = "último mes (velas diarias)"
@@ -3907,6 +4023,7 @@ elif page == "📈 Análisis y Trading":
                     else:
                         st.error(f"No se pudieron obtener datos de {symbol_analisis}. Verifica el símbolo o inténtalo más tarde.")
     
+    # ========== PESTAÑA 2: HISTORIAL DE TRANSACCIONES ==========
     with tab_historial:
         st.subheader("Todas las compras y ventas registradas")
         with st.spinner("Cargando historial de transacciones..."):
@@ -3955,10 +4072,10 @@ elif page == "📰 Noticias":
     mostrar_pagina_noticias()
     
 elif page == "📊 P2P Binance":
-    mostrar_pagina_p2p()  
-
+    mostrar_pagina_p2p()    
+    
 elif page == "⚽ Inversiones Deportivas":
-    mostrar_pagina_deportes()      
+    mostrar_pagina_deportes()    
     
 # ═══════════════════════════════════════
 # PÁGINA: CONFIGURACION
@@ -4189,7 +4306,7 @@ class DeportesService:
 
     def crear_inversion(self, deporte: str, tipo_mercado: str, objetivo: str,
                         capital: float, ganancia_pot: float, perdida_pot: float,
-                        cuota: float = None, notas: str = "") -> InversionDeportiva:
+                        notas: str = "") -> InversionDeportiva:
         # Validación y formateo de reglas
         tipo_enum = TipoMercadoDeportivo[tipo_mercado.upper()]
         
@@ -4200,16 +4317,19 @@ class DeportesService:
         else: # ESTADISTICA
             objetivo_formateado = str(objetivo).strip().upper() # Acepta "OVER 8.5 STRIKEOUTS", etc.
 
+        # MODIFICACIÓN 2: Descontar el capital invertido de la ganancia total esperada
+        ganancia_neta = Decimal(str(ganancia_pot)) - Decimal(str(capital))
+
         inversion = InversionDeportiva(
             deporte=deporte.upper(),
             tipo_mercado=tipo_enum,
             objetivo=objetivo_formateado,
             capital_invertido=Decimal(str(capital)),
-            ganancia_potencial=Decimal(str(ganancia_pot)),
+            ganancia_potencial=ganancia_neta,
             perdida_potencial=Decimal(str(perdida_pot)),
             estado=EstadoInversionDeportiva.ABIERTA,
             pnl_realizado=Decimal("0.00"),
-            cuota_odds=Decimal(str(cuota)) if cuota else None,
+            cuota_odds=None, # Campo anulado según requerimiento
             notas=notas
         )
         self.db.add(inversion)
@@ -4270,6 +4390,19 @@ class DeportesService:
         top_objetivos = sorted(stats_objetivos.items(), key=lambda x: x[1]["pnl"], reverse=True)
         equipo_mas_rentable = top_objetivos[0] if top_objetivos else ("Ninguno", {"pnl": 0.0, "veces": 0})
 
+        # MODIFICACIÓN 1: Obtener las últimas 10 inversiones cerradas cronológicamente
+        ultimas_10 = cerradas[-10:] if len(cerradas) >= 10 else cerradas
+        datos_ultimas_10 = [
+            {
+                "id": idx.id,
+                "objetivo": idx.objetivo,
+                "pnl": float(idx.pnl_realizado),
+                "estado": idx.estado.value,
+                "deporte": idx.deporte
+            }
+            for idx in ultimas_10
+        ]
+
         return {
             "total_inversiones": total_inversiones,
             "abiertas": abiertas,
@@ -4283,7 +4416,8 @@ class DeportesService:
             "max_ganancia_equipo": round(equipo_mas_rentable[1]["pnl"], 2),
             "desglose_por_objetivo": [
                 {"objetivo": k, **v} for k, v in stats_objetivos.items()
-            ]
+            ],
+            "ultimas_10_inversiones": datos_ultimas_10
         }
 
     def obtener_reporte_por_fechas(self, fecha_inicio: datetime, fecha_fin: datetime) -> Dict[str, Any]:
@@ -4383,6 +4517,9 @@ from sqlalchemy.orm import Session
 from app.models import SessionLocal, InversionDeportiva, EstadoInversionDeportiva
 from app.services.deportes_service import DeportesService
 
+# MODIFICACIÓN 3: Define aquí el capital base que tienes en tu cuenta deportiva
+CAPITAL_BASE_INICIAL = 1000.00 
+
 def mostrar_pagina_deportes():
     st.title("⚽ Inversiones y Apuestas Deportivas")
     st.markdown("Gestión de capital (*Bankroll*) independiente del portafolio cripto.")
@@ -4392,9 +4529,11 @@ def mostrar_pagina_deportes():
         srv = DeportesService(db)
         stats = srv.obtener_resumen_y_estadisticas()
 
+        capital_actual = CAPITAL_BASE_INICIAL + stats['pnl_neto']
+
         # ─── METRICAS PRINCIPALES ───
         col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("PnL Neto Realizado", f"${stats['pnl_neto']:,.2f}", delta_color="normal")
+        col1.metric("Capital Actual", f"${capital_actual:,.2f}", delta=f"{stats['pnl_neto']:,.2f} PnL Neto")
         col2.metric("Tasa Aciertos (Win Rate)", f"{stats['win_rate']}%")
         col3.metric("Capital en Juego", f"${stats['capital_en_juego']:,.2f}")
         col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"${stats['max_ganancia_equipo']:,.2f}")
@@ -4451,11 +4590,9 @@ def mostrar_pagina_deportes():
                         objetivo = st.text_input("Resultado (Ej: 2-1, 105, Empate)")
                     else:
                         objetivo = st.text_input("Estadística (Ej: OVER 8.5 STRIKEOUTS, +2.5 GOLES)").upper()
-                    
-                    cuota = st.number_input("Cuota / Odds (Opcional)", min_value=0.0, value=1.90, step=0.05)
                 with c3:
                     capital = st.number_input("Capital Invertido ($)", min_value=1.0, value=20.0, step=5.0)
-                    ganancia_pot = st.number_input("Ganancia Potencial ($)", min_value=0.0, value=18.0, step=5.0)
+                    ganancia_pot = st.number_input("Ganancia Total a Cobrar ($)", min_value=0.0, value=38.0, step=5.0, help="El total que paga el ticket (Inversión + Ganancia)")
                     perdida_pot = st.number_input("Pérdida Potencial ($)", min_value=0.0, value=20.0, step=5.0)
                 
                 notas = st.text_input("Notas o Análisis del partido")
@@ -4464,35 +4601,37 @@ def mostrar_pagina_deportes():
                     if not objetivo:
                         st.error("Por favor ingresa un equipo o resultado.")
                     else:
-                        srv.crear_inversion(deporte, tipo_merc, objetivo, capital, ganancia_pot, perdida_pot, cuota, notas)
+                        srv.crear_inversion(deporte, tipo_merc, objetivo, capital, ganancia_pot, perdida_pot, notas)
                         st.success(f"Inversión registrada para: {objetivo}")
                         st.rerun()
 
-        # ─── GRÁFICOS ANALÍTICOS (BARRA DE CAPITAL Y GANANCIAS) ───
-        desglose = stats["desglose_por_objetivo"]
-        if desglose:
-            df_desglose = pd.DataFrame(desglose)
+        # ─── GRÁFICOS ANALÍTICOS (MODIFICADO PARA MOSTRAR SOLO LAS ÚLTIMAS 10) ───
+        ultimas_10 = stats.get("ultimas_10_inversiones", [])
+        if ultimas_10:
+            df_ultimas = pd.DataFrame(ultimas_10)
+            df_ultimas["etiqueta"] = df_ultimas["id"].astype(str) + " - " + df_ultimas["objetivo"]
             
             g_col1, g_col2 = st.columns(2)
             with g_col1:
-                st.subheader("🏆 Ganancias y Pérdidas por Equipo/Objetivo")
+                st.subheader("🏆 PnL de las Últimas 10 Inversiones")
                 fig_pnl = px.bar(
-                    df_desglose.sort_values("pnl", ascending=True),
-                    x="pnl", y="objetivo", orientation="h",
+                    df_ultimas,
+                    x="etiqueta", y="pnl",
                     color="pnl", color_continuous_scale="RdYlGn",
-                    text="pnl", title="Rendimiento Acumulado (USD)"
+                    text="pnl", title="Ganancia/Pérdida Cronológica (USD)"
                 )
                 fig_pnl.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
                 st.plotly_chart(fig_pnl, use_container_width=True)
                 
             with g_col2:
-                st.subheader("📊 Frecuencia de Inversión por Deporte/Equipo")
-                fig_veces = px.bar(
-                    df_desglose.sort_values("veces", ascending=False),
-                    x="objetivo", y="veces", color="deporte",
-                    text="veces", title="Cantidad de Apuestas Realizadas"
+                st.subheader("📊 Deporte en las Últimas 10")
+                fig_pie = px.pie(
+                    df_ultimas, 
+                    names="deporte", 
+                    title="Distribución de Deporte (Recientes)",
+                    hole=0.4
                 )
-                st.plotly_chart(fig_veces, use_container_width=True)
+                st.plotly_chart(fig_pie, use_container_width=True)
         else:
             st.info("No hay estadísticas históricas cerradas aún para generar gráficos.")
 

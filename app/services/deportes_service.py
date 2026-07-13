@@ -12,7 +12,7 @@ class DeportesService:
 
     def crear_inversion(self, deporte: str, tipo_mercado: str, objetivo: str,
                         capital: float, ganancia_pot: float, perdida_pot: float,
-                        cuota: float = None, notas: str = "") -> InversionDeportiva:
+                        notas: str = "") -> InversionDeportiva:
         # Validación y formateo de reglas
         tipo_enum = TipoMercadoDeportivo[tipo_mercado.upper()]
         
@@ -23,16 +23,19 @@ class DeportesService:
         else: # ESTADISTICA
             objetivo_formateado = str(objetivo).strip().upper() # Acepta "OVER 8.5 STRIKEOUTS", etc.
 
+        # MODIFICACIÓN 2: Descontar el capital invertido de la ganancia total esperada
+        ganancia_neta = Decimal(str(ganancia_pot)) - Decimal(str(capital))
+
         inversion = InversionDeportiva(
             deporte=deporte.upper(),
             tipo_mercado=tipo_enum,
             objetivo=objetivo_formateado,
             capital_invertido=Decimal(str(capital)),
-            ganancia_potencial=Decimal(str(ganancia_pot)),
+            ganancia_potencial=ganancia_neta,
             perdida_potencial=Decimal(str(perdida_pot)),
             estado=EstadoInversionDeportiva.ABIERTA,
             pnl_realizado=Decimal("0.00"),
-            cuota_odds=Decimal(str(cuota)) if cuota else None,
+            cuota_odds=None, # Campo anulado según requerimiento
             notas=notas
         )
         self.db.add(inversion)
@@ -93,6 +96,19 @@ class DeportesService:
         top_objetivos = sorted(stats_objetivos.items(), key=lambda x: x[1]["pnl"], reverse=True)
         equipo_mas_rentable = top_objetivos[0] if top_objetivos else ("Ninguno", {"pnl": 0.0, "veces": 0})
 
+        # MODIFICACIÓN 1: Obtener las últimas 10 inversiones cerradas cronológicamente
+        ultimas_10 = cerradas[-10:] if len(cerradas) >= 10 else cerradas
+        datos_ultimas_10 = [
+            {
+                "id": idx.id,
+                "objetivo": idx.objetivo,
+                "pnl": float(idx.pnl_realizado),
+                "estado": idx.estado.value,
+                "deporte": idx.deporte
+            }
+            for idx in ultimas_10
+        ]
+
         return {
             "total_inversiones": total_inversiones,
             "abiertas": abiertas,
@@ -106,7 +122,8 @@ class DeportesService:
             "max_ganancia_equipo": round(equipo_mas_rentable[1]["pnl"], 2),
             "desglose_por_objetivo": [
                 {"objetivo": k, **v} for k, v in stats_objetivos.items()
-            ]
+            ],
+            "ultimas_10_inversiones": datos_ultimas_10
         }
 
     def obtener_reporte_por_fechas(self, fecha_inicio: datetime, fecha_fin: datetime) -> Dict[str, Any]:

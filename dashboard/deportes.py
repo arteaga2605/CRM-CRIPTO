@@ -13,6 +13,9 @@ from sqlalchemy.orm import Session
 from app.models import SessionLocal, InversionDeportiva, EstadoInversionDeportiva
 from app.services.deportes_service import DeportesService
 
+# MODIFICACIÓN 3: Define aquí el capital base que tienes en tu cuenta deportiva
+CAPITAL_BASE_INICIAL = 4236.00 
+
 def mostrar_pagina_deportes():
     st.title("⚽ Inversiones y Apuestas Deportivas")
     st.markdown("Gestión de capital (*Bankroll*) independiente del portafolio cripto.")
@@ -22,9 +25,11 @@ def mostrar_pagina_deportes():
         srv = DeportesService(db)
         stats = srv.obtener_resumen_y_estadisticas()
 
+        capital_actual = CAPITAL_BASE_INICIAL + stats['pnl_neto']
+
         # ─── METRICAS PRINCIPALES ───
         col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("PnL Neto Realizado", f"${stats['pnl_neto']:,.2f}", delta_color="normal")
+        col1.metric("Capital Actual", f"${capital_actual:,.2f}", delta=f"{stats['pnl_neto']:,.2f} PnL Neto")
         col2.metric("Tasa Aciertos (Win Rate)", f"{stats['win_rate']}%")
         col3.metric("Capital en Juego", f"${stats['capital_en_juego']:,.2f}")
         col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"${stats['max_ganancia_equipo']:,.2f}")
@@ -81,11 +86,9 @@ def mostrar_pagina_deportes():
                         objetivo = st.text_input("Resultado (Ej: 2-1, 105, Empate)")
                     else:
                         objetivo = st.text_input("Estadística (Ej: OVER 8.5 STRIKEOUTS, +2.5 GOLES)").upper()
-                    
-                    cuota = st.number_input("Cuota / Odds (Opcional)", min_value=0.0, value=1.90, step=0.05)
                 with c3:
                     capital = st.number_input("Capital Invertido ($)", min_value=1.0, value=20.0, step=5.0)
-                    ganancia_pot = st.number_input("Ganancia Potencial ($)", min_value=0.0, value=18.0, step=5.0)
+                    ganancia_pot = st.number_input("Ganancia Total a Cobrar ($)", min_value=0.0, value=38.0, step=5.0, help="El total que paga el ticket (Inversión + Ganancia)")
                     perdida_pot = st.number_input("Pérdida Potencial ($)", min_value=0.0, value=20.0, step=5.0)
                 
                 notas = st.text_input("Notas o Análisis del partido")
@@ -94,35 +97,37 @@ def mostrar_pagina_deportes():
                     if not objetivo:
                         st.error("Por favor ingresa un equipo o resultado.")
                     else:
-                        srv.crear_inversion(deporte, tipo_merc, objetivo, capital, ganancia_pot, perdida_pot, cuota, notas)
+                        srv.crear_inversion(deporte, tipo_merc, objetivo, capital, ganancia_pot, perdida_pot, notas)
                         st.success(f"Inversión registrada para: {objetivo}")
                         st.rerun()
 
-        # ─── GRÁFICOS ANALÍTICOS (BARRA DE CAPITAL Y GANANCIAS) ───
-        desglose = stats["desglose_por_objetivo"]
-        if desglose:
-            df_desglose = pd.DataFrame(desglose)
+        # ─── GRÁFICOS ANALÍTICOS (MODIFICADO PARA MOSTRAR SOLO LAS ÚLTIMAS 10) ───
+        ultimas_10 = stats.get("ultimas_10_inversiones", [])
+        if ultimas_10:
+            df_ultimas = pd.DataFrame(ultimas_10)
+            df_ultimas["etiqueta"] = df_ultimas["id"].astype(str) + " - " + df_ultimas["objetivo"]
             
             g_col1, g_col2 = st.columns(2)
             with g_col1:
-                st.subheader("🏆 Ganancias y Pérdidas por Equipo/Objetivo")
+                st.subheader("🏆 PnL de las Últimas 10 Inversiones")
                 fig_pnl = px.bar(
-                    df_desglose.sort_values("pnl", ascending=True),
-                    x="pnl", y="objetivo", orientation="h",
+                    df_ultimas,
+                    x="etiqueta", y="pnl",
                     color="pnl", color_continuous_scale="RdYlGn",
-                    text="pnl", title="Rendimiento Acumulado (USD)"
+                    text="pnl", title="Ganancia/Pérdida Cronológica (USD)"
                 )
                 fig_pnl.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
                 st.plotly_chart(fig_pnl, use_container_width=True)
                 
             with g_col2:
-                st.subheader("📊 Frecuencia de Inversión por Deporte/Equipo")
-                fig_veces = px.bar(
-                    df_desglose.sort_values("veces", ascending=False),
-                    x="objetivo", y="veces", color="deporte",
-                    text="veces", title="Cantidad de Apuestas Realizadas"
+                st.subheader("📊 Deporte en las Últimas 10")
+                fig_pie = px.pie(
+                    df_ultimas, 
+                    names="deporte", 
+                    title="Distribución de Deporte (Recientes)",
+                    hole=0.4
                 )
-                st.plotly_chart(fig_veces, use_container_width=True)
+                st.plotly_chart(fig_pie, use_container_width=True)
         else:
             st.info("No hay estadísticas históricas cerradas aún para generar gráficos.")
 

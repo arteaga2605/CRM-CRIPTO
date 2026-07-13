@@ -25,9 +25,309 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# ═══════════════════════════════════════
-# FUNCIONES AUXILIARES
-# ═══════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# CSS PERSONALIZADO PARA SIDEBAR MEJORADO Y TEMA OSCURO PREMIUM
+# ═══════════════════════════════════════════════════════════════════════════════
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+
+    /* Ocultar el radio group nativo de Streamlit en el sidebar */
+    [data-testid="stSidebar"] div[role="radiogroup"] {
+        display: none !important;
+    }
+
+    /* Fondo del sidebar con gradiente oscuro premium */
+    [data-testid="stSidebar"] > div:first-child {
+        background: linear-gradient(180deg, #0d1117 0%, #161b22 50%, #0d1117 100%) !important;
+        border-right: 1px solid rgba(255,215,0,0.08) !important;
+    }
+
+    /* Ocultar el header del sidebar */
+    [data-testid="stSidebar"] .css-1d391kg,
+    [data-testid="stSidebar"] h1 {
+        display: none !important;
+    }
+
+    /* Estilos para botones de navegacion personalizados */
+    div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"] button[kind="secondary"] {
+        background: transparent !important;
+        border: none !important;
+        color: rgba(224,224,224,0.85) !important;
+        font-size: 13px !important;
+        font-weight: 500 !important;
+        text-align: left !important;
+        padding: 10px 14px !important;
+        margin: 0 0 3px 0 !important;
+        border-radius: 10px !important;
+        width: 100% !important;
+        transition: all 0.2s ease !important;
+        position: relative !important;
+        overflow: hidden !important;
+    }
+
+    div[data-testid="stVerticalBlock"] > div > div[data-testid="stVerticalBlock"] button[kind="secondary"]:hover {
+        background: rgba(255,255,255,0.04) !important;
+        border: none !important;
+        color: rgba(224,224,224,0.85) !important;
+    }
+
+    /* Boton activo (dorado) */
+    .nav-active button[kind="secondary"] {
+        background: linear-gradient(90deg, rgba(255,215,0,0.12) 0%, rgba(255,215,0,0.04) 100%) !important;
+        border: 1px solid rgba(255,215,0,0.15) !important;
+        color: #ffd700 !important;
+        font-weight: 600 !important;
+    }
+
+    .nav-active button[kind="secondary"]:hover {
+        background: linear-gradient(90deg, rgba(255,215,0,0.15) 0%, rgba(255,215,0,0.06) 100%) !important;
+        border: 1px solid rgba(255,215,0,0.2) !important;
+        color: #ffd700 !important;
+    }
+
+    /* Ocultar el label de los botones de navegacion */
+    .nav-item-label {
+        display: none !important;
+    }
+
+    /* Estilos para el contenido principal */
+    .main .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+    }
+
+    /* Scrollbar personalizada */
+    [data-testid="stSidebar"] ::-webkit-scrollbar {
+        width: 4px;
+    }
+    [data-testid="stSidebar"] ::-webkit-scrollbar-track {
+        background: transparent;
+    }
+    [data-testid="stSidebar"] ::-webkit-scrollbar-thumb {
+        background: rgba(255,215,0,0.2);
+        border-radius: 2px;
+    }
+
+    /* Ocultar el texto del radio nativo que queda */
+    [data-testid="stSidebar"] .stMarkdown p {
+        margin-bottom: 0 !important;
+    }
+
+    /* Estilos para metric cards */
+    [data-testid="stMetric"] {
+        background: linear-gradient(135deg, rgba(30,42,58,0.6) 0%, rgba(15,23,36,0.8) 100%);
+        border: 1px solid rgba(255,255,255,0.04);
+        border-radius: 16px;
+        padding: 16px;
+    }
+
+    [data-testid="stMetric"] > div:first-child {
+        color: rgba(176,196,222,0.6) !important;
+        font-size: 12px !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.5px !important;
+    }
+
+    [data-testid="stMetric"] > div:nth-child(2) {
+        color: #fff !important;
+        font-size: 24px !important;
+        font-weight: 700 !important;
+    }
+
+    /* Estilos para expanders */
+    [data-testid="stExpander"] {
+        border: 1px solid rgba(255,255,255,0.04) !important;
+        border-radius: 12px !important;
+        background: rgba(30,42,58,0.3) !important;
+    }
+
+    /* Estilos para dataframes */
+    .stDataFrame {
+        border-radius: 12px !important;
+        overflow: hidden !important;
+    }
+
+    /* Estilos para botones primarios */
+    button[kind="primary"] {
+        background: linear-gradient(135deg, #ffd700 0%, #ffb800 100%) !important;
+        color: #0a0e14 !important;
+        font-weight: 700 !important;
+        border: none !important;
+        border-radius: 10px !important;
+        box-shadow: 0 4px 15px rgba(255,215,0,0.2) !important;
+        transition: all 0.2s ease !important;
+    }
+
+    button[kind="primary"]:hover {
+        transform: translateY(-1px) !important;
+        box-shadow: 0 6px 20px rgba(255,215,0,0.3) !important;
+    }
+
+    /* Estilos para selectbox y otros inputs */
+    [data-testid="stSelectbox"] > div > div,
+    [data-testid="stNumberInput"] > div > div,
+    [data-testid="stTextInput"] > div > div {
+        background: rgba(30,42,58,0.5) !important;
+        border: 1px solid rgba(255,255,255,0.06) !important;
+        border-radius: 10px !important;
+    }
+
+    /* Estilos para tabs */
+    [data-testid="stTabs"] [role="tablist"] {
+        background: rgba(30,42,58,0.3) !important;
+        border-radius: 12px !important;
+        padding: 4px !important;
+    }
+
+    [data-testid="stTabs"] [role="tab"] {
+        color: rgba(176,196,222,0.6) !important;
+        font-weight: 500 !important;
+        border-radius: 8px !important;
+        padding: 8px 16px !important;
+    }
+
+    [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+        background: rgba(255,215,0,0.1) !important;
+        color: #ffd700 !important;
+        font-weight: 600 !important;
+    }
+
+    /* Estilos para toast/notifications */
+    .stToast {
+        border-radius: 12px !important;
+        border: 1px solid rgba(255,215,0,0.15) !important;
+    }
+
+    /* Estilos para el divider */
+    hr {
+        border-color: rgba(255,255,255,0.04) !important;
+    }
+
+    /* Estilos para checkbox */
+    [data-testid="stCheckbox"] > label {
+        color: rgba(224,224,224,0.85) !important;
+    }
+
+    /* Estilos para slider */
+    [data-testid="stSlider"] > div {
+        color: rgba(224,224,224,0.85) !important;
+    }
+
+    /* Estilos para date input */
+    [data-testid="stDateInput"] > div > div {
+        background: rgba(30,42,58,0.5) !important;
+        border: 1px solid rgba(255,255,255,0.06) !important;
+        border-radius: 10px !important;
+    }
+
+    /* Estilos para text area */
+    [data-testid="stTextArea"] > div > div {
+        background: rgba(30,42,58,0.5) !important;
+        border: 1px solid rgba(255,255,255,0.06) !important;
+        border-radius: 10px !important;
+    }
+
+    /* Estilos para form submit button */
+    [data-testid="stFormSubmitButton"] > button {
+        background: linear-gradient(135deg, #ffd700 0%, #ffb800 100%) !important;
+        color: #0a0e14 !important;
+        font-weight: 700 !important;
+        border: none !important;
+        border-radius: 10px !important;
+    }
+
+    /* Estilos para download button */
+    [data-testid="stDownloadButton"] > button {
+        background: rgba(255,215,0,0.08) !important;
+        border: 1px solid rgba(255,215,0,0.15) !important;
+        color: #ffd700 !important;
+        border-radius: 10px !important;
+        font-weight: 600 !important;
+    }
+
+    [data-testid="stDownloadButton"] > button:hover {
+        background: rgba(255,215,0,0.15) !important;
+    }
+
+    /* Estilos para info/alert boxes */
+    .stAlert {
+        border-radius: 12px !important;
+        border: 1px solid rgba(255,255,255,0.06) !important;
+    }
+
+    .stAlert[data-baseweb="notification"] {
+        background: rgba(30,42,58,0.5) !important;
+    }
+
+    /* Estilos para caption */
+    .stCaption {
+        color: rgba(176,196,222,0.5) !important;
+    }
+
+    /* Estilos para markdown h1, h2, h3 */
+    .main h1 {
+        color: #fff !important;
+        font-weight: 700 !important;
+        letter-spacing: -0.5px !important;
+    }
+
+    .main h2 {
+        color: #e0e0e0 !important;
+        font-weight: 600 !important;
+    }
+
+    .main h3 {
+        color: rgba(224,224,224,0.9) !important;
+        font-weight: 600 !important;
+    }
+
+    /* Estilos para spinner */
+    .stSpinner > div {
+        border-color: #ffd700 !important;
+    }
+
+    /* Estilos para progress bar */
+    .stProgress > div > div {
+        background-color: #ffd700 !important;
+    }
+
+    /* Estilos para el sidebar collapse button */
+    [data-testid="stSidebarCollapseButton"] {
+        color: rgba(176,196,222,0.6) !important;
+    }
+
+    [data-testid="stSidebarCollapseButton"]:hover {
+        color: #ffd700 !important;
+    }
+
+    /* Ocultar footer y deploy button */
+    footer, .stDeployButton, .stToolbar {
+        display: none !important;
+    }
+
+    /* Estilos para dataframe headers */
+    .stDataFrame th {
+        background: rgba(30,42,58,0.8) !important;
+        color: #ffd700 !important;
+        font-weight: 600 !important;
+        border-color: rgba(255,255,255,0.06) !important;
+    }
+
+    .stDataFrame td {
+        border-color: rgba(255,255,255,0.03) !important;
+    }
+
+    .stDataFrame tr:hover td {
+        background: rgba(255,255,255,0.02) !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUNCIONES AUXILIARES (TODAS ORIGINALES, SIN MODIFICAR)
+# ═══════════════════════════════════════════════════════════════════════════════
 def fetch(endpoint):
     try:
         r = requests.get(f"{API_URL}{endpoint}")
@@ -99,13 +399,13 @@ def obtener_velas(symbol, timeframe="1h", limit=100):
         pass
     return []
 
-# ═══════════════════════════════════════
-# FUNCIONES PARA ANÁLISIS TÉCNICO
-# ═══════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUNCIONES PARA ANALISIS TECNICO (TODAS ORIGINALES)
+# ═══════════════════════════════════════════════════════════════════════════════
 def obtener_velas_binance(symbol, interval="1d", limit=30):
     """
     Obtiene velas OHLCV directamente desde Binance.
-    Por defecto: interval="1d", limit=30 (último mes)
+    Por defecto: interval="1d", limit=30 (ultimo mes)
     """
     try:
         pair = f"{symbol.upper()}USDT"
@@ -139,7 +439,7 @@ def obtener_velas_binance(symbol, interval="1d", limit=30):
         return None
 
 def encontrar_soportes_resistencias(velas, num_niveles=3):
-    """Encuentra soportes (mínimos locales) y resistencias (máximos locales) con ventana dinámica."""
+    """Encuentra soportes (minimos locales) y resistencias (maximos locales) con ventana dinamica."""
     highs = [v["high"] for v in velas]
     lows = [v["low"] for v in velas]
     n = len(velas)
@@ -162,9 +462,9 @@ def encontrar_soportes_resistencias(velas, num_niveles=3):
         resistencias_cercanas = resistencias[:num_niveles] if len(resistencias) >= num_niveles else resistencias
     return soportes_cercanos[:num_niveles], resistencias_cercanas[:num_niveles]
 
-# ═══════════════════════════════════════
-# FUNCIONES PARA TENDENCIAS Y CORRELACIONES
-# ═══════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# FUNCIONES PARA TENDENCIAS Y CORRELACIONES (TODAS ORIGINALES)
+# ═══════════════════════════════════════════════════════════════════════════════
 @st.cache_data(ttl=3600)
 def obtener_simbolos_binance():
     url = "https://api.binance.com/api/v3/exchangeInfo"
@@ -249,164 +549,292 @@ def calcular_correlacion_con_btc(token_prices, btc_prices):
     except:
         return None
 
-# Categorías actualizadas (Binance)
+# Categorias actualizadas (Binance)
 CATEGORIAS = [
     "BNB Chain", "Solana", "RWA", "MEME", "Pagos", "IA",
     "Capa 1/Capa 2", "Fase semilla", "Launchpool", "New", "Megadrop",
-    "Juegos", "DeFi", "En observación", "Fan Token", "Infraestructura",
+    "Juegos", "DeFi", "En observacion", "Fan Token", "Infraestructura",
     "Almacenamiento", "NFT", "Launchpad", "Yzi", "desconocida"
 ]
 
-# ═══════════════════════════════════════
-# ESTILOS PERSONALIZADOS PARA EL SIDEBAR
-# ═══════════════════════════════════════
-st.markdown("""
-<style>
-    /* Fondo del sidebar */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(135deg, #1e2a3a 0%, #0f1724 100%);
-        border-right: 1px solid #2d3e50;
-    }
-    /* Título principal */
-    [data-testid="stSidebar"] .css-1d391kg {
-        color: #ffffff;
-        font-size: 1.8rem;
-        font-weight: bold;
-        text-align: center;
-        border-bottom: 2px solid #ffd700;
-        padding-bottom: 0.5rem;
-        margin-bottom: 1rem;
-    }
-    /* Subtítulo */
-    [data-testid="stSidebar"] .css-1wivap2 {
-        color: #b0c4de;
-        font-size: 0.9rem;
-        text-align: center;
-        margin-top: -0.5rem;
-        margin-bottom: 1.5rem;
-    }
-    /* Opciones del radio */
-    [data-testid="stSidebar"] div[role="radiogroup"] label {
-        background-color: rgba(255,255,255,0.05);
-        border-radius: 12px;
-        padding: 8px 12px;
-        margin: 4px 0;
-        transition: all 0.2s ease;
-        color: #e0e0e0;
-        font-weight: 500;
-        font-size: 1rem;
-    }
-    /* Hover sobre opciones */
-    [data-testid="stSidebar"] div[role="radiogroup"] label:hover {
-        background-color: rgba(255,215,0,0.2);
-        color: #ffd700;
-        transform: translateX(5px);
-    }
-    /* Opción seleccionada */
-    [data-testid="stSidebar"] div[role="radiogroup"] label[data-testid="stMarkdownContainer"]:has(input:checked) {
-        background-color: #ffd700;
-        color: #0f1724;
-        font-weight: bold;
-        box-shadow: 0 2px 8px rgba(255,215,0,0.3);
-    }
-    /* Radio circle oculto (personalizamos con background) */
-    [data-testid="stSidebar"] div[role="radiogroup"] input {
-        accent-color: #ffd700;
-    }
-    /* Checkbox de actualización automática */
-    [data-testid="stSidebar"] .stCheckbox {
-        background: #2d3e50;
-        padding: 6px 12px;
-        border-radius: 20px;
-        margin: 10px 0;
-        color: white;
-    }
-    /* Selectbox dentro del sidebar */
-    [data-testid="stSidebar"] .stSelectbox {
-        background: #2d3e50;
-        border-radius: 8px;
-    }
-    /* Info box */
-    [data-testid="stSidebar"] .stAlert {
-        background: #2d3e50;
-        border-left: 4px solid #ffd700;
-        border-radius: 8px;
-    }
-</style>
-""", unsafe_allow_html=True)
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIDEBAR MEJORADO - NAVEGACION POR BOTONES CON ESTILO PREMIUM
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ═══════════════════════════════════════
-# SIDEBAR
-# ═══════════════════════════════════════
-st.sidebar.title("🪙 Crypto CRM")
-st.sidebar.markdown("*Tratando criptomonedas como clientes*")
+# Inicializar session_state para la pagina si no existe
+if 'page' not in st.session_state:
+    st.session_state.page = "Dashboard"
 
-# Control de actualización automática
-st.sidebar.subheader("⚡ Actualización automática")
-auto_refresh = st.sidebar.checkbox("🔄 Activar actualización automática", value=False)
-if auto_refresh:
-    interval = st.sidebar.selectbox("⏱️ Intervalo (segundos)", [5, 10, 30, 60], index=1)
-    st_autorefresh(interval=interval * 1000, key="auto_refresh")
-else:
-    st.sidebar.info("Desactivado. Usa los botones 'Actualizar' en cada sección.")
+# Funcion helper para crear boton de navegacion con badge
+def nav_button(label, icon, badge=None, badge_color="gold", key=None):
+    """Crea un boton de navegacion estilizado para el sidebar."""
+    is_active = st.session_state.page == label
 
-# ========== NOTIFICACIONES ==========
-try:
-    notificaciones = fetch("/notifications?unread_only=true&limit=10")
-    if notificaciones and isinstance(notificaciones, list):
-        unread_count = len(notificaciones)
-        for notif in notificaciones:
-            st.toast(notif["message"], icon="🔔")
-    else:
-        unread_count = 0
-except:
-    unread_count = 0
+    # Construir el texto del boton
+    button_text = f"{icon}  {label}"
+    if badge:
+        button_text += f"  • {badge}"
 
-col_bell, col_text = st.sidebar.columns([1, 3])
-with col_bell:
-    st.markdown(f"🔔", unsafe_allow_html=True)
-with col_text:
-    st.markdown(f"**Notificaciones** ({unread_count} nuevas)")
+    # CSS adicional para el estado activo
+    if is_active:
+        st.markdown(f'<div class="nav-active">', unsafe_allow_html=True)
 
-if st.sidebar.button("📋 Ver notificaciones"):
-    with st.sidebar.expander("📢 Últimas notificaciones", expanded=True):
-        notifs = fetch("/notifications?limit=20")
-        if notifs:
-            for n in notifs:
-                st.markdown(f"- {n['created_at'][:16]} – {n['message']}")
-            if st.button("Marcar todas como leídas"):
-                requests.post(f"{API_URL}/notifications/read-all")
-                st.rerun()
+    if st.button(button_text, key=key or f"nav_{label}", use_container_width=True, type="secondary"):
+        st.session_state.page = label
+        st.rerun()
+
+    if is_active:
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# Funcion para obtener datos del portfolio para el summary
+def obtener_resumen_portfolio():
+    """Obtiene datos resumidos del portfolio para mostrar en el sidebar."""
+    try:
+        data = fetch("/dashboard/resumen")
+        if data and data.get("resumen"):
+            return data["resumen"]
+    except:
+        pass
+    return None
+
+def obtener_contador_notificaciones():
+    """Obtiene el contador de notificaciones no leidas."""
+    try:
+        notifs = fetch("/notifications?unread_only=true&limit=50")
+        if notifs and isinstance(notifs, list):
+            return len(notifs)
+    except:
+        pass
+    return 0
+
+def obtener_contador_tareas():
+    """Obtiene el contador de tareas pendientes."""
+    try:
+        tareas = fetch("/tareas/pendientes")
+        if tareas and isinstance(tareas, list):
+            return len(tareas)
+    except:
+        pass
+    return 0
+
+def obtener_contador_oportunidades():
+    """Obtiene el contador de oportunidades abiertas."""
+    try:
+        opps = fetch("/oportunidades/?estado=abierta")
+        if opps and isinstance(opps, list):
+            return len(opps)
+    except:
+        pass
+    return 0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RENDERIZAR SIDEBAR
+# ═══════════════════════════════════════════════════════════════════════════════
+with st.sidebar:
+
+    # ========== LOGO AREA ==========
+    st.markdown("""
+    <div style="padding: 8px 4px 16px 4px;">
+        <div style="display: flex; align-items: center; gap: 12px;">
+            <div style="
+                width: 40px; height: 40px;
+                background: linear-gradient(135deg, #ffd700 0%, #ffb800 100%);
+                border-radius: 12px;
+                display: flex; align-items: center; justify-content: center;
+                box-shadow: 0 4px 15px rgba(255,215,0,0.25), 0 0 30px rgba(255,215,0,0.1);
+                font-size: 20px;
+            ">🪙</div>
+            <div>
+                <div style="color: #ffd700; font-size: 18px; font-weight: 700; letter-spacing: -0.5px; line-height: 1.2;">Crypto CRM</div>
+                <div style="color: rgba(176,196,222,0.6); font-size: 11px; font-weight: 500; letter-spacing: 0.5px; text-transform: uppercase;">Portfolio Manager</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ========== MINI PORTFOLIO SUMMARY ==========
+    resumen = obtener_resumen_portfolio()
+    if resumen:
+        pnl_total = resumen.get("pnl_total", 0)
+        roi = resumen.get("roi_porcentaje", 0)
+        activos = resumen.get("clientes_activos", 0)
+        peligro = resumen.get("clientes_peligro", 0)
+
+        pnl_color = "#00e676" if pnl_total >= 0 else "#ff6b6b"
+        pnl_sign = "+" if pnl_total >= 0 else ""
+
+        st.markdown(f"""
+        <div style="
+            margin: 0 0 16px 0;
+            padding: 14px 16px;
+            background: rgba(255,215,0,0.04);
+            border: 1px solid rgba(255,215,0,0.1);
+            border-radius: 14px;
+            position: relative;
+            overflow: hidden;
+        ">
+            <div style="position: absolute; top: 0; left: 0; right: 0; height: 2px; background: linear-gradient(90deg, transparent, #ffd700, transparent); opacity: 0.4;"></div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <span style="color: rgba(176,196,222,0.7); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px;">PnL Total</span>
+                <span style="color: {pnl_color}; font-size: 11px; font-weight: 700; background: rgba(0,230,118,0.1) if {pnl_total >= 0} else rgba(255,107,107,0.1); padding: 2px 8px; border-radius: 20px;">{pnl_sign}{roi:.1f}%</span>
+            </div>
+            <div style="color: #fff; font-size: 22px; font-weight: 700; letter-spacing: -0.5px;">${pnl_total:,.2f}</div>
+            <div style="display: flex; gap: 12px; margin-top: 10px;">
+                <div style="flex: 1; text-align: center; padding: 6px 0; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                    <div style="color: #ffd700; font-size: 13px; font-weight: 700;">{activos}</div>
+                    <div style="color: rgba(176,196,222,0.5); font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px;">Activos</div>
+                </div>
+                <div style="flex: 1; text-align: center; padding: 6px 0; background: rgba(0,0,0,0.2); border-radius: 8px;">
+                    <div style="color: #ff6b6b; font-size: 13px; font-weight: 700;">{peligro}</div>
+                    <div style="color: rgba(176,196,222,0.5); font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px;">Alertas</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # ========== NOTIFICACIONES TOAST ==========
+    try:
+        notificaciones = fetch("/notifications?unread_only=true&limit=10")
+        if notificaciones and isinstance(notificaciones, list):
+            unread_count = len(notificaciones)
+            for notif in notificaciones:
+                st.toast(notif["message"], icon="🔔")
         else:
-            st.info("No hay notificaciones.")
+            unread_count = 0
+    except:
+        unread_count = 0
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 🧭 Navegación")
+    # ========== CONTROL DE ACTUALIZACION AUTOMATICA ==========
+    st.markdown("""
+    <div style="
+        color: rgba(176,196,222,0.35);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        padding: 8px 10px 4px;
+    ">Sistema</div>
+    """, unsafe_allow_html=True)
 
-page = st.sidebar.radio("Navegación", [
-    "🏠 Dashboard",
-    "👥 Clientes",
-    "💱 Interacciones",
-    "🎯 Oportunidades",
-    "✅ Tareas",
-    "📦 Lotes FIFO",
-    "📈 Analytics",
-    "📡 Mercado en Vivo",
-    "🔥 Tendencias de Mercado",
-    "📢 Eventos Binance",
-    "📈 Análisis y Trading",
-    "📰 Noticias",
-    "📊 P2P Binance",
-    "⚽ Inversiones Deportivas",
-    "⚙️ Configuracion"
-], label_visibility="hidden")
+    auto_refresh = st.checkbox("🔄 Auto-refresh", value=False, key="auto_refresh_check")
+    if auto_refresh:
+        interval = st.selectbox("Intervalo (s)", [5, 10, 30, 60], index=1, key="refresh_interval", label_visibility="collapsed")
+        st_autorefresh(interval=interval * 1000, key="auto_refresh")
 
-# ═══════════════════════════════════════
-# PÁGINA: DASHBOARD
-# ═══════════════════════════════════════
-if page == "🏠 Dashboard":
+    # ========== SECCION: PRINCIPAL ==========
+    st.markdown("""
+    <div style="
+        color: rgba(176,196,222,0.35);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        padding: 16px 10px 8px;
+    ">Principal</div>
+    """, unsafe_allow_html=True)
+
+    # Obtener contadores dinamicos
+    num_notifs = obtener_contador_notificaciones()
+    num_tareas = obtener_contador_tareas()
+    num_opps = obtener_contador_oportunidades()
+
+    nav_button("Dashboard", "🏠", badge=str(num_notifs) if num_notifs > 0 else None, key="nav_dashboard")
+    nav_button("Clientes", "👥", key="nav_clientes")
+    nav_button("Interacciones", "💱", key="nav_interacciones")
+    nav_button("Oportunidades", "🎯", badge=str(num_opps) if num_opps > 0 else None, key="nav_oportunidades")
+    nav_button("Tareas", "✅", badge=f"{num_tareas} pend." if num_tareas > 0 else None, key="nav_tareas")
+    nav_button("Lotes FIFO", "📦", key="nav_lotes")
+
+    # ========== DIVIDER ==========
+    st.markdown("""
+    <div style="height: 1px; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); margin: 12px 10px;"></div>
+    """, unsafe_allow_html=True)
+
+    # ========== SECCION: ANALISIS & MERCADO ==========
+    st.markdown("""
+    <div style="
+        color: rgba(176,196,222,0.35);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        padding: 8px 10px 8px;
+    ">Analisis & Mercado</div>
+    """, unsafe_allow_html=True)
+
+    nav_button("Analytics", "📈", key="nav_analytics")
+    nav_button("Mercado en Vivo", "📡", key="nav_mercado")
+    nav_button("Tendencias", "🔥", key="nav_tendencias")
+    nav_button("Eventos Binance", "📢", key="nav_eventos")
+    nav_button("P2P Binance", "📊", key="nav_p2p")
+
+    # ========== DIVIDER ==========
+    st.markdown("""
+    <div style="height: 1px; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.06), transparent); margin: 12px 10px;"></div>
+    """, unsafe_allow_html=True)
+
+    # ========== SECCION: EXTRAS ==========
+    st.markdown("""
+    <div style="
+        color: rgba(176,196,222,0.35);
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 1.2px;
+        padding: 8px 10px 8px;
+    ">Extras</div>
+    """, unsafe_allow_html=True)
+
+    nav_button("Noticias", "📰", key="nav_noticias")
+    nav_button("Inversiones Deportivas", "⚽", key="nav_deportes")
+    nav_button("Configuracion", "⚙️", key="nav_config")
+
+    # ========== FOOTER / API STATUS + USER ==========
+    st.markdown("""
+    <div style="
+        padding: 16px 4px 8px;
+        border-top: 1px solid rgba(255,255,255,0.04);
+        margin-top: 16px;
+    ">
+        <div style="
+            display: flex; align-items: center; gap: 8px;
+            padding: 8px 12px;
+            background: rgba(0,230,118,0.06);
+            border: 1px solid rgba(0,230,118,0.1);
+            border-radius: 10px;
+            margin-bottom: 12px;
+        ">
+            <span style="width: 6px; height: 6px; background: #00e676; border-radius: 50%; box-shadow: 0 0 6px #00e676;"></span>
+            <span style="color: rgba(0,230,118,0.8); font-size: 11px; font-weight: 600;">Binance API: Conectado</span>
+        </div>
+
+        <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="
+                width: 34px; height: 34px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                border-radius: 10px;
+                display: flex; align-items: center; justify-content: center;
+                color: white;
+                font-size: 14px;
+                font-weight: 700;
+            ">Y</div>
+            <div style="flex: 1; min-width: 0;">
+                <div style="color: #e0e0e0; font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Yzi Trader</div>
+                <div style="color: rgba(176,196,222,0.5); font-size: 10px;">v2.0.0 &bull; Pro</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+# Obtener la pagina actual de session_state
+page = st.session_state.page
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: DASHBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+if page == "Dashboard":
     st.title("📊 Dashboard Principal")
-    
+
     if st.button("🔄 Actualizar precios ahora (Binance)"):
         with st.spinner("Actualizando precios de todos los clientes..."):
             clientes = fetch("/clientes/")
@@ -417,7 +845,7 @@ if page == "🏠 Dashboard":
                         post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
                 st.success("Precios actualizados")
                 st.rerun()
-    
+
     data = fetch("/dashboard/resumen")
     if data:
         resumen = data.get("resumen", {})
@@ -433,11 +861,11 @@ if page == "🏠 Dashboard":
         col5.metric("ROI", f"{resumen.get('roi_porcentaje', 0):.1f}%")
 
         st.divider()
-        
-        # ========== NUEVA SECCIÓN P2P CON TOP 20 CRIPTO ==========
-        # ========== NUEVA SECCIÓN P2P CON RECOMENDACIÓN ==========
+
+        # ========== NUEVA SECCION P2P CON TOP 20 CRIPTO ==========
+        # ========== NUEVA SECCION P2P CON RECOMENDACION ==========
         st.subheader("📊 Oportunidad P2P en tiempo real")
-        
+
         @st.cache_data(ttl=3600)
         def obtener_top_20_criptos():
             try:
@@ -450,9 +878,9 @@ if page == "🏠 Dashboard":
                     return ["BTC", "ETH", "USDT", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "MATIC", "SHIB", "TRX", "AVAX", "UNI", "ATOM", "LTC", "NEAR", "ALGO", "ICP"]
             except:
                 return ["BTC", "ETH", "USDT", "BNB", "SOL", "XRP", "ADA", "DOGE", "DOT", "LINK", "MATIC", "SHIB", "TRX", "AVAX", "UNI", "ATOM", "LTC", "NEAR", "ALGO", "ICP"]
-        
+
         top_20 = obtener_top_20_criptos()
-        
+
         col_a, col_b, col_c = st.columns([2, 1, 2])
         with col_a:
             fiat_sel = st.selectbox("Moneda fiat", ["ARS", "MXN", "COP", "PEN", "CLP", "BRL", "VES", "USD"], index=0, key="p2p_fiat_dash")
@@ -472,7 +900,7 @@ if page == "🏠 Dashboard":
                     sell_price = p2p_data.get("sell_price", 0)
                     spread = p2p_data.get("spread_pct", 0)
 
-                    # Verificar si hay datos válidos (ambos precios > 0)
+                    # Verificar si hay datos validos (ambos precios > 0)
                     tiene_datos = buy_price > 0 and sell_price > 0
 
                     if tiene_datos:
@@ -502,13 +930,13 @@ if page == "🏠 Dashboard":
                             </div>
                             """, unsafe_allow_html=True)
 
-                        # ========== RECOMENDACIÓN ==========
+                        # ========== RECOMENDACION ==========
                         st.divider()
-                        st.subheader("💡 Recomendación P2P")
-                        
+                        st.subheader("💡 Recomendacion P2P")
+
                         ganancia_por_unidad = sell_price - buy_price
                         ganancia_pct = (ganancia_por_unidad / buy_price) * 100 if buy_price > 0 else 0
-                        
+
                         if ganancia_pct > 1.0:
                             recomendacion = "COMPRAR"
                             color = "#00ff88"
@@ -517,32 +945,32 @@ if page == "🏠 Dashboard":
                         elif ganancia_pct < -1.0:
                             recomendacion = "VENDER"
                             color = "#ff4444"
-                            mensaje = f"✅ **Recomendado VENDER** a ${sell_price:.2f} (actualmente está por encima del precio de compra)."
+                            mensaje = f"✅ **Recomendado VENDER** a ${sell_price:.2f} (actualmente esta por encima del precio de compra)."
                             detalle = f"Puedes vender ahora y recomprar cuando baje. Diferencia: ${abs(ganancia_por_unidad):.2f} por unidad ({abs(ganancia_pct):.2f}%)"
                         else:
                             recomendacion = "NEUTRO"
                             color = "#ffd700"
                             mensaje = f"⚠️ **Spread bajo ({ganancia_pct:.2f}%). No hay oportunidad clara.**"
                             detalle = "Espera a que el spread supere el 1% para obtener una ganancia significativa."
-                        
+
                         st.markdown(f"""
                         <div style="background-color: #1e2a3a; padding: 20px; border-radius: 10px; border-left: 4px solid {color};">
                             <h4 style="color: {color}; margin:0;">{mensaje}</h4>
                             <p style="color: #b0c4de; margin:5px 0 0 0;">{detalle}</p>
                         </div>
                         """, unsafe_allow_html=True)
-                        
+
                         col_r1, col_r2, col_r3 = st.columns(3)
                         col_r1.metric("Precio Compra", f"${buy_price:.2f}")
                         col_r2.metric("Precio Venta", f"${sell_price:.2f}")
                         col_r3.metric("Ganancia por unidad", f"${ganancia_por_unidad:.2f}", 
                                       delta=f"{ganancia_pct:.2f}%" if abs(ganancia_pct) > 0 else None,
                                       delta_color="normal" if ganancia_pct > 0 else "inverse")
-                        # ========== FIN RECOMENDACIÓN ==========
+                        # ========== FIN RECOMENDACION ==========
                     else:
                         # No hay datos para esta moneda/fiat
                         st.warning(f"⚠️ No hay anuncios activos para **{asset_sel}/{fiat_sel}** en este momento.")
-                        st.info("Prueba con otra moneda o fiat, o actualiza más tarde.")
+                        st.info("Prueba con otra moneda o fiat, o actualiza mas tarde.")
                 else:
                     st.warning("No se obtuvieron datos P2P.")
             else:
@@ -551,22 +979,22 @@ if page == "🏠 Dashboard":
             st.warning(f"Error al obtener datos P2P: {e}")
 
         st.divider()
-        # ========== FIN SECCIÓN P2P ==========
-        # ========== FIN SECCIÓN P2P ==========
-        
-        st.subheader("📊 Ganancias y Pérdidas Realizadas")
+        # ========== FIN SECCION P2P ==========
+        # ========== FIN SECCION P2P ==========
+
+        st.subheader("📊 Ganancias y Perdidas Realizadas")
         pnl_summary = fetch("/analytics/realized-pnl-summary")
         if pnl_summary:
             col_a, col_b, col_c = st.columns(3)
             col_a.metric("💰 Ganancias Realizadas", f"${pnl_summary.get('ganancias_realizadas', 0):,.2f}")
-            col_b.metric("💸 Pérdidas Realizadas", f"${pnl_summary.get('perdidas_realizadas', 0):,.2f}", delta_color="inverse")
+            col_b.metric("💸 Perdidas Realizadas", f"${pnl_summary.get('perdidas_realizadas', 0):,.2f}", delta_color="inverse")
             col_c.metric("📈 Neto Realizado", f"${pnl_summary.get('neto_realizado', 0):,.2f}",
                          delta=f"${pnl_summary.get('neto_realizado', 0):,.2f}" if pnl_summary.get('neto_realizado') >= 0 else f"-${abs(pnl_summary.get('neto_realizado', 0)):,.2f}",
                          delta_color="normal")
         else:
-            st.info("No hay datos de ganancias/pérdidas realizadas todavía.")
-        
-        st.subheader("📈 Evolución de PnL Realizado (Últimos 7 días)")
+            st.info("No hay datos de ganancias/perdidas realizadas todavia.")
+
+        st.subheader("📈 Evolucion de PnL Realizado (Ultimos 7 dias)")
         daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
         if daily_pnl_data:
             df_pnl = pd.DataFrame(daily_pnl_data)
@@ -579,10 +1007,10 @@ if page == "🏠 Dashboard":
                     text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
                     textposition='auto'
                 ))
-                fig.update_layout(title="PnL Realizado por Día", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
-                st.plotly_chart(fig, width='stretch')
+                fig.update_layout(title="PnL Realizado por Dia", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
+                st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No hay datos de PnL para los últimos 7 días.")
+                st.info("No hay datos de PnL para los ultimos 7 dias.")
         else:
             st.info("No se pudieron cargar los datos de PnL diario.")
 
@@ -592,13 +1020,13 @@ if page == "🏠 Dashboard":
             if distribucion:
                 df_dist = pd.DataFrame(distribucion)
                 fig = px.pie(df_dist, values="porcentaje", names="symbol", hole=0.4, title="Por Valor de Mercado")
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
         with col_right:
             st.subheader("Top Performers")
             if top:
                 df_top = pd.DataFrame(top)
                 fig = px.bar(df_top, x="symbol", y="roi", color="roi", color_continuous_scale="RdYlGn", title="ROI por Moneda")
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
 
         st.subheader("🔔 Alertas Inteligentes")
         if alertas:
@@ -610,17 +1038,18 @@ if page == "🏠 Dashboard":
                     st.caption(f"Accion sugerida: {alerta['accion_sugerida']}")
         else:
             st.success("No hay alertas activas. Todo en orden! 🎉")
-# ═══════════════════════════════════════
-# PÁGINA: CLIENTES (con precio promedio sin fee y PnL ajustado)
-# ═══════════════════════════════════════
-elif page == "👥 Clientes":
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: CLIENTES (con precio promedio sin fee y PnL ajustado)
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Clientes":
     st.title("👥 Gestion de Clientes (Criptomonedas)")
     st.markdown("""
     - **Costo Promedio (con fee)**: incluye comisiones prorrateadas (costo real).
     - **Precio Promedio (sin fee)**: promedio de los precios de compra sin comisiones.
-    - **PnL FIFO Real**: calculado con FIFO y comisiones (ganancia/pérdida real).
+    - **PnL FIFO Real**: calculado con FIFO y comisiones (ganancia/perdida real).
     - **PnL No Realizado (sin fee)**: basado en el precio promedio sin comisiones (lo que ves en el exchange).
-    - **Los precios se actualizan automáticamente con los datos de Binance cada hora, o manualmente con los botones de abajo.**
+    - **Los precios se actualizan automaticamente con los datos de Binance cada hora, o manualmente con los botones de abajo.**
     """)
 
     # ========== ACTUALIZAR TODOS ==========
@@ -646,7 +1075,7 @@ elif page == "👥 Clientes":
     # ========== OBTENER CLIENTES ==========
     clientes = fetch("/clientes/")
     if not clientes:
-        st.warning("No hay clientes registrados. Crea uno nuevo en la pestaña '➕ Nuevo Cliente'")
+        st.warning("No hay clientes registrados. Crea uno nuevo en la pestana '➕ Nuevo Cliente'")
         clientes = []
 
     if clientes:
@@ -659,14 +1088,14 @@ elif page == "👥 Clientes":
             symbol = c["symbol"]
             cantidad_total = float(c.get("cantidad_total", 0))
             precio_actual = float(c.get("precio_actual", 0))
-            
+
             # Interacciones de compra para precio promedio sin fee
             interacciones = fetch(f"/interacciones/cliente/{symbol}")
             compras = [i for i in interacciones if i.get("tipo") == "compra"] if interacciones else []
             suma_cantidad = sum(float(i["cantidad"]) for i in compras) if compras else 0
             suma_precio_cantidad = sum(float(i["cantidad"]) * float(i["precio_unitario"]) for i in compras) if compras else 0
             precio_promedio_sin_fee = suma_precio_cantidad / suma_cantidad if suma_cantidad > 0 else 0
-            
+
             # FIFO (con fee)
             lotes_cliente = lotes_data.get(symbol, [])
             cantidad_restante_fifo = 0.0
@@ -675,13 +1104,13 @@ elif page == "👥 Clientes":
                 cant = lote["cantidad_restante"]
                 cantidad_restante_fifo += cant
                 costo_total_fifo += cant * lote["precio_unitario"]
-            
+
             valor_actual_fifo = cantidad_restante_fifo * precio_actual
             pnl_no_realizado_fifo = valor_actual_fifo - costo_total_fifo
-            
+
             # PnL sin fee
             pnl_no_realizado_sin_fee = cantidad_total * (precio_actual - precio_promedio_sin_fee)
-            
+
             costo_prom_con_fee = float(c.get("costo_promedio", 0))
 
             df_data.append({
@@ -731,7 +1160,7 @@ elif page == "👥 Clientes":
         edited_df = st.data_editor(
             df,
             column_config=column_config,
-            width='stretch',
+            use_container_width=True,
             hide_index=True,
             key="clientes_editor",
             disabled=["symbol", "precio_prom_sin_fee", "costo_prom_con_fee", "precio_actual", "valor_mercado", "pnl_realizado", "roi_realizado_pct", "pnl_fifo_no_realizado", "pnl_sin_fee_no_realizado", "roi_fifo_pct", "roi_sin_fee_pct"]
@@ -772,7 +1201,7 @@ elif page == "👥 Clientes":
         with col_del2:
             if st.button("🗑️ Eliminar Cliente", type="primary"):
                 if cliente_a_eliminar:
-                    if st.checkbox(f"Confirmar eliminación de {cliente_a_eliminar} (todos sus datos serán borrados)"):
+                    if st.checkbox(f"Confirmar eliminacion de {cliente_a_eliminar} (todos sus datos seran borrados)"):
                         resp = delete(f"/clientes/{cliente_a_eliminar}")
                         if resp:
                             st.success(f"Cliente {cliente_a_eliminar} eliminado exitosamente")
@@ -781,7 +1210,7 @@ elif page == "👥 Clientes":
                             st.error("Error al eliminar cliente")
         # ======================================
 
-        # ========== ACTUALIZAR PRECIO INDIVIDUAL (con validación) ==========
+        # ========== ACTUALIZAR PRECIO INDIVIDUAL (con validacion) ==========
         st.subheader("Actualizar Precio Individual y Ver Detalle FIFO")
         col_sel, col_btn = st.columns([3,1])
         with col_sel:
@@ -803,14 +1232,14 @@ elif page == "👥 Clientes":
                                 else:
                                     st.error(f"❌ Error {r.status_code}: {r.text[:200]}")
                             except Exception as e:
-                                st.error(f"❌ Excepción: {e}")
+                                st.error(f"❌ Excepcion: {e}")
                     else:
-                        st.error("No se pudo obtener precio de Binance para este símbolo")
+                        st.error("No se pudo obtener precio de Binance para este simbolo")
 
         # ========== CORREGIR CAPITAL MANUALMENTE ==========
         st.divider()
         st.subheader("🛠️ Corregir Capital Invertido Manualmente")
-        st.info("Usa esta opción si el sistema calculó mal el capital invertido histórico y necesitas ajustarlo.")
+        st.info("Usa esta opcion si el sistema calculo mal el capital invertido historico y necesitas ajustarlo.")
         col_corr1, col_corr2, col_corr3 = st.columns([2, 2, 1])
         with col_corr1:
             sym_corregir = st.selectbox("Selecciona moneda a corregir", [c["symbol"] for c in clientes] if clientes else [], key="sym_corr")
@@ -819,7 +1248,7 @@ elif page == "👥 Clientes":
         with col_corr3:
             st.write("")
             st.write("")
-            if st.button("Aplicar Corrección", type="primary"):
+            if st.button("Aplicar Correccion", type="primary"):
                 if sym_corregir:
                     resp = post(f"/clientes/{sym_corregir}/corregir-inversion", {"nueva_inversion": nueva_inv})
                     if resp:
@@ -827,7 +1256,7 @@ elif page == "👥 Clientes":
                         st.cache_data.clear()
                         st.rerun()
                     else:
-                        st.error("Error al aplicar la corrección.")
+                        st.error("Error al aplicar la correccion.")
 
         # ========== MOSTRAR LOTES (FIFO) ==========
         if selected_symbol:
@@ -842,7 +1271,7 @@ elif page == "👥 Clientes":
                     "Exchange": l.get("exchange", ""),
                     "Notas": l.get("notas", "")
                 } for l in lotes_cliente])
-                st.dataframe(df_lotes, width='stretch')
+                st.dataframe(df_lotes, use_container_width=True)
             else:
                 st.info("No hay lotes activos para este cliente.")
 
@@ -868,10 +1297,10 @@ elif page == "👥 Clientes":
                         st.balloons()
                         st.rerun()
 
-# ═══════════════════════════════════════
-# PÁGINA: INTERACCIONES
-# ═══════════════════════════════════════
-elif page == "💱 Interacciones":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: INTERACCIONES
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Interacciones":
     st.title("💱 Registro de Interacciones (FIFO para ventas)")
 
     with st.form("nueva_interaccion"):
@@ -926,24 +1355,24 @@ elif page == "💱 Interacciones":
                     st.write(f"${float(row.get('pnl_realizado', 0)):.2f}")
                 with col7:
                     if st.button("🗑️ Eliminar", key=f"del_{row['id']}"):
-                        if st.checkbox(f"Confirmar eliminación de {row['tipo']} {row['cantidad']} @ ${row['precio_unitario']}", key=f"confirm_{row['id']}"):
+                        if st.checkbox(f"Confirmar eliminacion de {row['tipo']} {row['cantidad']} @ ${row['precio_unitario']}", key=f"confirm_{row['id']}"):
                             resp = delete(f"/interacciones/{row['id']}")
                             if resp:
-                                st.success(f"Interacción {row['id']} eliminada")
+                                st.success(f"Interaccion {row['id']} eliminada")
                                 st.rerun()
                 st.divider()
         else:
             st.info("No hay interacciones para este cliente.")
 
-# ═══════════════════════════════════════
-# PÁGINA: OPORTUNIDADES
-# ═══════════════════════════════════════
-elif page == "🎯 Oportunidades":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: OPORTUNIDADES
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Oportunidades":
     st.title("🎯 Pipeline de Oportunidades")
-    
+
     clientes_lista = fetch("/clientes/")
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
-    
+
     with st.expander("➕ Nueva Oportunidad", expanded=True):
         with st.form("nueva_oportunidad"):
             col1, col2 = st.columns(2)
@@ -962,9 +1391,9 @@ elif page == "🎯 Oportunidades":
             submitted = st.form_submit_button("Crear Oportunidad")
             if submitted:
                 if not symbol:
-                    st.error("Debes ingresar un símbolo de cliente")
+                    st.error("Debes ingresar un simbolo de cliente")
                 elif symbol not in simbolos_clientes:
-                    st.error(f"El cliente '{symbol}' no existe. Regístralo primero en la sección Clientes.")
+                    st.error(f"El cliente '{symbol}' no existe. Registralo primero en la seccion Clientes.")
                 elif entrada <= 0 or objetivo <= 0 or stop <= 0:
                     st.error("Los precios de entrada, objetivo y stop deben ser mayores que cero.")
                 else:
@@ -984,11 +1413,11 @@ elif page == "🎯 Oportunidades":
                             st.rerun()
                         else:
                             st.error("No se pudo crear la oportunidad. Revisa que los datos sean correctos.")
-    
+
     st.subheader("📋 Oportunidades Abiertas")
     if st.button("Refrescar lista"):
         st.rerun()
-    
+
     oportunidades = fetch("/oportunidades/?estado=abierta")
     if oportunidades:
         df_opp = pd.DataFrame([{
@@ -1000,11 +1429,11 @@ elif page == "🎯 Oportunidades":
             "Stop": float(o.get("precio_stop_loss", 0)),
             "R:R": float(o.get("riesgo_beneficio", 0)),
             "Confianza": o.get("confianza", 3),
-            "Fecha Creación": o.get("fecha_creacion", "")[:16] if o.get("fecha_creacion") else "",
+            "Fecha Creacion": o.get("fecha_creacion", "")[:16] if o.get("fecha_creacion") else "",
             "Notas": o.get("notas_analisis", "")[:50]
         } for o in oportunidades])
-        st.dataframe(df_opp, width='stretch')
-        
+        st.dataframe(df_opp, use_container_width=True)
+
         st.subheader("Cerrar Oportunidad")
         col_opp, col_estado, col_pnl, col_btn = st.columns([2,2,2,1])
         with col_opp:
@@ -1024,15 +1453,15 @@ elif page == "🎯 Oportunidades":
     else:
         st.info("No hay oportunidades abiertas. Crea una nueva usando el formulario de arriba.")
 
-# ═══════════════════════════════════════
-# PÁGINA: TAREAS
-# ═══════════════════════════════════════
-elif page == "✅ Tareas":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: TAREAS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Tareas":
     st.title("✅ Tareas y Alertas")
-    
+
     clientes_lista = fetch("/clientes/")
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
-    
+
     with st.expander("➕ Nueva Tarea", expanded=True):
         with st.form("nueva_tarea"):
             symbol = st.text_input("Symbol del cliente").upper()
@@ -1041,16 +1470,16 @@ elif page == "✅ Tareas":
                 "revision_estrategia", "rebalancear", "alerta_precio"
             ])
             descripcion = st.text_area("Descripcion")
-            dias = st.number_input("Días para completar", min_value=0, max_value=30, value=1)
+            dias = st.number_input("Dias para completar", min_value=0, max_value=30, value=1)
             prioridad = st.slider("Prioridad (1=alta, 5=baja)", 1, 5, 2)
             submitted = st.form_submit_button("Crear Tarea")
             if submitted:
                 if not symbol:
-                    st.error("Debes ingresar un símbolo de cliente")
+                    st.error("Debes ingresar un simbolo de cliente")
                 elif symbol not in simbolos_clientes:
-                    st.error(f"El cliente '{symbol}' no existe. Regístralo primero en la sección Clientes.")
+                    st.error(f"El cliente '{symbol}' no existe. Registralo primero en la seccion Clientes.")
                 elif not descripcion:
-                    st.error("La descripción es obligatoria")
+                    st.error("La descripcion es obligatoria")
                 else:
                     with st.spinner("Creando tarea..."):
                         result = post("/tareas/", {
@@ -1064,11 +1493,11 @@ elif page == "✅ Tareas":
                             st.rerun()
                         else:
                             st.error("No se pudo crear la tarea. Revisa los datos.")
-    
+
     st.subheader("📋 Tareas Pendientes")
     if st.button("Refrescar lista"):
         st.rerun()
-    
+
     tareas_pendientes = fetch("/tareas/pendientes")
     if tareas_pendientes:
         for t in tareas_pendientes:
@@ -1078,9 +1507,9 @@ elif page == "✅ Tareas":
                     st.write(f"**{t.get('tipo_tarea', '')}** - {t.get('descripcion', '')}")
                     cliente_id = t.get('cliente_id')
                     if cliente_id:
-                        st.caption(f"Cliente ID: {cliente_id} | Límite: {t.get('fecha_limite', '')}")
+                        st.caption(f"Cliente ID: {cliente_id} | Limite: {t.get('fecha_limite', '')}")
                     else:
-                        st.caption(f"Límite: {t.get('fecha_limite', '')}")
+                        st.caption(f"Limite: {t.get('fecha_limite', '')}")
                     if t.get('fecha_limite'):
                         fecha_limite = datetime.fromisoformat(t['fecha_limite'].replace('Z', '+00:00'))
                         if fecha_limite < datetime.now():
@@ -1096,9 +1525,9 @@ elif page == "✅ Tareas":
                         st.rerun()
                 st.divider()
     else:
-        st.success("No hay tareas pendientes. ¡Todo al día! 🎉")
-    
-    with st.expander("📜 Ver tareas completadas (últimas 10)"):
+        st.success("No hay tareas pendientes. ¡Todo al dia! 🎉")
+
+    with st.expander("📜 Ver tareas completadas (ultimas 10)"):
         with st.spinner("Cargando historial de tareas completadas..."):
             tareas_completadas = fetch("/tareas/completadas?limit=10")
             if tareas_completadas:
@@ -1107,21 +1536,21 @@ elif page == "✅ Tareas":
                         "ID": t["id"],
                         "Cliente ID": t.get("cliente_id", ""),
                         "Tipo": t.get("tipo_tarea", ""),
-                        "Descripción": t.get("descripcion", ""),
+                        "Descripcion": t.get("descripcion", ""),
                         "Completada el": t.get("fecha_completada", "")[:16] if t.get("fecha_completada") else "Fecha no registrada"
                     } for t in tareas_completadas])
-                    st.dataframe(df_completadas, width='stretch')
+                    st.dataframe(df_completadas, use_container_width=True)
                 else:
                     st.info("No hay tareas completadas para mostrar.")
             else:
-                st.info("No se pudieron cargar las tareas completadas. Asegúrate de que la API esté corriendo.")
+                st.info("No se pudieron cargar las tareas completadas. Asegurate de que la API este corriendo.")
 
-# ═══════════════════════════════════════
-# PÁGINA: LOTES FIFO
-# ═══════════════════════════════════════
-elif page == "📦 Lotes FIFO":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: LOTES FIFO
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Lotes FIFO":
     st.title("📦 Lotes de Compra (FIFO)")
-    st.info("Cada compra genera un lote. Las ventas consumen lotes desde el más antiguo (FIFO).")
+    st.info("Cada compra genera un lote. Las ventas consumen lotes desde el mas antiguo (FIFO).")
 
     symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in fetch("/clientes/") or []])
     if symbol:
@@ -1136,7 +1565,7 @@ elif page == "📦 Lotes FIFO":
                 "Exchange": l.get("exchange", ""),
                 "Notas": l.get("notas", "")
             } for l in lotes])
-            st.dataframe(df_lotes, width='stretch')
+            st.dataframe(df_lotes, use_container_width=True)
             total_restante = df_lotes["Cantidad Restante"].sum()
             costo_total_restante = sum(df_lotes["Cantidad Restante"] * df_lotes["Precio Compra (incluye fee)"])
             st.metric("Cantidad total remanente", f"{total_restante:.8f}")
@@ -1144,13 +1573,13 @@ elif page == "📦 Lotes FIFO":
         else:
             st.write("No hay lotes para este cliente.")
 
-# ═══════════════════════════════════════
-# PÁGINA: ANALYTICS
-# ═══════════════════════════════════════
-elif page == "📈 Analytics":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: ANALYTICS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Analytics":
     st.title("📈 Analytics y Reportes")
-    
-    st.subheader("🔥 Heatmap: Rendimiento por Categoría (ROI %)")
+
+    st.subheader("🔥 Heatmap: Rendimiento por Categoria (ROI %)")
     perf_data = fetch("/analytics/performance-by-category")
     if perf_data:
         df_perf = pd.DataFrame(perf_data)
@@ -1163,16 +1592,16 @@ elif page == "📈 Analytics":
                 color_continuous_scale="RdYlGn",
                 text_auto=True,
                 aspect="auto",
-                title="ROI Promedio por Categoría"
+                title="ROI Promedio por Categoria"
             )
             fig.update_xaxes(tickangle=45)
             fig.update_layout(height=300, width=800)
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No hay datos de categorías aún. Registra clientes con categorías.")
+            st.info("No hay datos de categorias aun. Registra clientes con categorias.")
     else:
-        st.info("No se pudieron cargar los datos de rendimiento por categoría.")
-    
+        st.info("No se pudieron cargar los datos de rendimiento por categoria.")
+
     data = fetch("/dashboard/resumen")
     if data:
         resumen = data.get("resumen", {})
@@ -1180,15 +1609,15 @@ elif page == "📈 Analytics":
         col1.metric("Total Invertido", f"${resumen.get('total_invertido',0):,.2f}")
         col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado',0):,.2f}")
         col3.metric("PnL Total", f"${resumen.get('pnl_total',0):,.2f}")
-    
-    st.subheader("Distribución del Portafolio")
+
+    st.subheader("Distribucion del Portafolio")
     distribucion = fetch("/dashboard/resumen").get("distribucion",[]) if data else []
     if distribucion:
         df_dist = pd.DataFrame(distribucion)
-        fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composición Actual")
-        st.plotly_chart(fig, width='stretch')
-    
-    st.subheader("Evolución de PnL Realizado (Últimos 7 días)")
+        fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composicion Actual")
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.subheader("Evolucion de PnL Realizado (Ultimos 7 dias)")
     daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
     if daily_pnl_data:
         df_pnl = pd.DataFrame(daily_pnl_data)
@@ -1201,28 +1630,28 @@ elif page == "📈 Analytics":
                 text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
                 textposition='auto'
             ))
-            fig.update_layout(title="PnL Realizado por Día", xaxis_title="Fecha", yaxis_title="PnL (USD)")
-            st.plotly_chart(fig, width='stretch')
+            fig.update_layout(title="PnL Realizado por Dia", xaxis_title="Fecha", yaxis_title="PnL (USD)")
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No hay datos de PnL para los últimos 7 días.")
+            st.info("No hay datos de PnL para los ultimos 7 dias.")
     else:
         st.info("No se pudieron cargar los datos de PnL diario.")
 
-# ═══════════════════════════════════════
-# PÁGINA: MERCADO EN VIVO
-# ═══════════════════════════════════════
-elif page == "📡 Mercado en Vivo":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: MERCADO EN VIVO
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Mercado en Vivo":
     st.title("📡 Datos Reales de Binance")
     st.markdown("Tendencias y sentimiento del mercado en tiempo real")
-    
+
     simbolos = ["BTC", "ETH", "BNB", "SOL", "XRP", "ADA", "DOGE", "PEPE"]
     symbol = st.selectbox("Selecciona una criptomoneda", simbolos, index=0)
-    
+
     ticker = obtener_ticker_real(symbol)
     if ticker:
         cambio_pct = ticker.get("percentage", 0.0)
         precio_actual = ticker.get("last", 0)
-        
+
         if cambio_pct > 0.5:
             arrow = "🔼"
             tendencia = "Alcista fuerte"
@@ -1238,7 +1667,7 @@ elif page == "📡 Mercado en Vivo":
         else:
             arrow = "⏸️"
             tendencia = "Neutral"
-        
+
         if cambio_pct > 3:
             sentimiento = "🟢 Muy alcista / Euforia"
         elif cambio_pct > 1:
@@ -1250,10 +1679,10 @@ elif page == "📡 Mercado en Vivo":
         elif cambio_pct > -1:
             sentimiento = "🔴 Ligeramente bajista"
         elif cambio_pct > -3:
-            sentimiento = "🔴 Bajista / Preocupación"
+            sentimiento = "🔴 Bajista / Preocupacion"
         else:
-            sentimiento = "🔴 Muy bajista / Pánico"
-        
+            sentimiento = "🔴 Muy bajista / Panico"
+
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric(f"{symbol}/USDT", f"${precio_actual:,.4f}", delta=f"{cambio_pct:.2f}%")
@@ -1261,21 +1690,21 @@ elif page == "📡 Mercado en Vivo":
             st.markdown(f"### Tendencia: {arrow} {tendencia}")
         with col3:
             st.markdown(f"### Sentimiento: {sentimiento}")
-        
+
         st.divider()
-        
+
         st.subheader("Detalles del Ticker")
         detalle_col1, detalle_col2 = st.columns(2)
         with detalle_col1:
-            st.metric("Máximo 24h", f"${ticker.get('high', 0):,.4f}")
-            st.metric("Mínimo 24h", f"${ticker.get('low', 0):,.4f}")
+            st.metric("Maximo 24h", f"${ticker.get('high', 0):,.4f}")
+            st.metric("Minimo 24h", f"${ticker.get('low', 0):,.4f}")
             st.metric("Volumen (24h)", f"{ticker.get('volume', 0):,.2f}")
         with detalle_col2:
             st.metric("Ask", f"${ticker.get('ask', 0):,.4f}")
             st.metric("Bid", f"${ticker.get('bid', 0):,.4f}")
-            st.metric("Última actualización", ticker.get('timestamp', '')[:19])
-        
-        st.subheader("Gráfico de Velas (OHLCV)")
+            st.metric("Ultima actualizacion", ticker.get('timestamp', '')[:19])
+
+        st.subheader("Grafico de Velas (OHLCV)")
         timeframe = st.selectbox("Timeframe", ["1m","5m","15m","30m","1h","4h","1d"], index=4)
         limit = st.slider("Cantidad de velas", 30, 200, 100)
         velas = obtener_velas(symbol, timeframe, limit)
@@ -1290,27 +1719,27 @@ elif page == "📡 Mercado en Vivo":
                 close=df_velas['close']
             )])
             fig.update_layout(title=f"{symbol}/USDT - Velas {timeframe}", xaxis_title="Fecha", yaxis_title="Precio USD")
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
         else:
-            st.warning("No se pudieron obtener velas para este símbolo.")
+            st.warning("No se pudieron obtener velas para este simbolo.")
     else:
-        st.error("No se pudo obtener información del ticker. Intenta con otro símbolo.")
+        st.error("No se pudo obtener informacion del ticker. Intenta con otro simbolo.")
 
-# ═══════════════════════════════════════
-# PÁGINA: TENDENCIAS DE MERCADO (CoinGecko)
-# ═══════════════════════════════════════
-elif page == "🔥 Tendencias de Mercado":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: TENDENCIAS DE MERCADO (CoinGecko)
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Tendencias":
     st.title("🔥 Tendencias de Mercado (CoinGecko)")
-    st.markdown("Criptomonedas más buscadas y con mayor tendencia actualmente.")
-    
+    st.markdown("Criptomonedas mas buscadas y con mayor tendencia actualmente.")
+
     if st.button("🔄 Actualizar datos"):
         st.cache_data.clear()
         st.rerun()
-    
+
     with st.spinner("Cargando datos de tendencias, Binance y correlaciones..."):
         binance_symbols = obtener_simbolos_binance()
         tendencias = obtener_tendencias_coingecko()
-        
+
         if tendencias:
             df_list = []
             progress_bar = st.progress(0)
@@ -1321,11 +1750,11 @@ elif page == "🔥 Tendencias de Mercado":
                 score = token["score"]
                 market_rank = token["market_cap_rank"]
                 thumb = token["thumb"]
-                
+
                 in_binance = f"{symbol}USDT" in binance_symbols
                 price_data = obtener_precio_actual_coingecko(token_id)
                 change_24h = price_data["change_24h"]
-                
+
                 if change_24h > 1:
                     trend_icon = "🟢"
                     trend_text = "Alcista fuerte"
@@ -1338,7 +1767,7 @@ elif page == "🔥 Tendencias de Mercado":
                 else:
                     trend_icon = "🔴"
                     trend_text = "Bajista fuerte"
-                
+
                 correlation = None
                 if symbol != "BTC" and token_id:
                     token_prices = obtener_historicos_coingecko(token_id, days=7)
@@ -1362,7 +1791,7 @@ elif page == "🔥 Tendencias de Mercado":
                         correlation = "⚪ Sin datos"
                 elif symbol == "BTC":
                     correlation = "⚪ Referencia"
-                
+
                 df_list.append({
                     "Token": symbol,
                     "Nombre": name,
@@ -1371,21 +1800,21 @@ elif page == "🔥 Tendencias de Mercado":
                     "En Binance": "✅" if in_binance else "❌",
                     "Cambio 24h (%)": round(change_24h, 2),
                     "Tendencia": f"{trend_icon} {trend_text}",
-                    "Correlación BTC": correlation,
+                    "Correlacion BTC": correlation,
                     "Logo": thumb,
                     "ID": token_id
                 })
                 progress_bar.progress((i + 1) / len(tendencias))
-            
+
             df_trend = pd.DataFrame(df_list)
             if not df_trend.empty:
-                display_cols = ["Token", "Nombre", "Score", "Market Cap Rank", "En Binance", "Cambio 24h (%)", "Tendencia", "Correlación BTC"]
-                st.dataframe(df_trend[display_cols], width='stretch')
-                
+                display_cols = ["Token", "Nombre", "Score", "Market Cap Rank", "En Binance", "Cambio 24h (%)", "Tendencia", "Correlacion BTC"]
+                st.dataframe(df_trend[display_cols], use_container_width=True)
+
                 fig = px.bar(df_trend, x="Token", y="Score", color="Score",
                              color_continuous_scale="Blues", title="Score de Tendencia")
-                st.plotly_chart(fig, width='stretch')
-                
+                st.plotly_chart(fig, use_container_width=True)
+
                 fig2 = go.Figure()
                 colors = ['green' if x > 0 else 'red' for x in df_trend["Cambio 24h (%)"]]
                 fig2.add_trace(go.Bar(
@@ -1395,39 +1824,39 @@ elif page == "🔥 Tendencias de Mercado":
                     text=df_trend["Cambio 24h (%)"].apply(lambda x: f"{x:.2f}%"),
                     textposition='auto'
                 ))
-                fig2.update_layout(title="Variación 24h por Token", xaxis_title="Token", yaxis_title="Cambio (%)")
-                st.plotly_chart(fig2, width='stretch')
-                
+                fig2.update_layout(title="Variacion 24h por Token", xaxis_title="Token", yaxis_title="Cambio (%)")
+                st.plotly_chart(fig2, use_container_width=True)
+
                 st.subheader("🖼️ Logos de tokens en tendencia")
                 cols = st.columns(5)
                 for i, row in df_trend.head(10).iterrows():
                     with cols[i % 5]:
                         if row["Logo"]:
                             st.image(row["Logo"], caption=row["Token"], width=60)
-                
+
                 binance_count = df_trend[df_trend["En Binance"] == "✅"].shape[0]
                 st.info(f"De los {len(df_trend)} tokens en tendencia, **{binance_count}** cotizan actualmente en Binance (par USDT).")
             else:
                 st.info("No se encontraron datos de tendencias.")
         else:
-            st.error("No se pudieron obtener datos de tendencias. Intenta más tarde.")
+            st.error("No se pudieron obtener datos de tendencias. Intenta mas tarde.")
 
-# ═══════════════════════════════════════
-# PÁGINA: EVENTOS BINANCE (solo enlace manual)
-# ═══════════════════════════════════════
-elif page == "📢 Eventos Binance":
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: EVENTOS BINANCE (solo enlace manual)
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Eventos Binance":
     st.title("📢 Eventos Binance - Launchpool, Megadrop y Nuevos Listados")
     st.markdown("""
-    **⚠️ Actualización automática desactivada** Debido a restricciones técnicas (bloqueo de scraping por parte de Binance), esta sección ya no intenta obtener eventos de forma automática.
-    
-    Para estar al día de los últimos lanzamientos (Launchpool, Megadrop, nuevos listados), visita directamente la página oficial de anuncios:
+    **⚠️ Actualizacion automatica desactivada** Debido a restricciones tecnicas (bloqueo de scraping por parte de Binance), esta seccion ya no intenta obtener eventos de forma automatica.
+
+    Para estar al dia de los ultimos lanzamientos (Launchpool, Megadrop, nuevos listados), visita directamente la pagina oficial de anuncios:
     """)
     st.markdown(
-        "[🔗 Abrir página de anuncios de Binance](https://www.binance.com/en/support/announcement/c-48?c=48&navId=48)",
+        "[🔗 Abrir pagina de anuncios de Binance](https://www.binance.com/en/support/announcement/c-48?c=48&navId=48)",
         unsafe_allow_html=True
     )
     st.info("Puedes revisar manualmente los anuncios y luego registrar tus oportunidades o tareas en el CRM.")
-    
+
     # Mostrar eventos antiguos si existen (por si quedaron en la BD)
     eventos = fetch("/binance-events?limit=10")
     if eventos and isinstance(eventos, list) and len(eventos) > 0:
@@ -1435,64 +1864,64 @@ elif page == "📢 Eventos Binance":
             df_events = pd.DataFrame(eventos)
             if "detected_at" in df_events.columns:
                 df_events["detected_at"] = pd.to_datetime(df_events["detected_at"]).dt.strftime("%Y-%m-%d %H:%M")
-            st.dataframe(df_events[["title", "event_type", "detected_at", "url"]], width='stretch')
-    
-    with st.expander("ℹ️ ¿Por qué ya no se actualizan automáticamente?"):
+            st.dataframe(df_events[["title", "event_type", "detected_at", "url"]], use_container_width=True)
+
+    with st.expander("ℹ️ ¿Por que ya no se actualizan automaticamente?"):
         st.markdown("""
-        - Binance ha bloqueado el acceso automatizado a su feed RSS y a las páginas de anuncios (códigos 202/404/403).
-        - Para evitar errores y mantener la estabilidad de la aplicación, se ha optado por redirigir al usuario a la fuente oficial.
-        - Si en el futuro Binance ofrece una API pública para eventos, se podrá reactivar la automatización.
+        - Binance ha bloqueado el acceso automatizado a su feed RSS y a las paginas de anuncios (codigos 202/404/403).
+        - Para evitar errores y mantener la estabilidad de la aplicacion, se ha optado por redirigir al usuario a la fuente oficial.
+        - Si en el futuro Binance ofrece una API publica para eventos, se podra reactivar la automatizacion.
         """)
 
-# ═══════════════════════════════════════
-# PÁGINA: ANÁLISIS Y TRADING
-# ═══════════════════════════════════════
-elif page == "📈 Análisis y Trading":
-    st.title("📈 Análisis Técnico e Historial de Trading")
-    
-    tab_analisis, tab_historial = st.tabs(["📊 Análisis Técnico", "📜 Historial de Transacciones"])
-    
-    # ========== PESTAÑA 1: ANÁLISIS TÉCNICO ==========
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: ANALISIS Y TRADING
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Analisis y Trading":
+    st.title("📈 Analisis Tecnico e Historial de Trading")
+
+    tab_analisis, tab_historial = st.tabs(["📊 Analisis Tecnico", "📜 Historial de Transacciones"])
+
+    # ========== PESTANA 1: ANALISIS TECNICO ==========
     with tab_analisis:
-        st.subheader("Análisis de Soportes y Resistencias")
+        st.subheader("Analisis de Soportes y Resistencias")
         col1, col2 = st.columns(2)
         with col1:
-            symbol_analisis = st.text_input("Símbolo de la moneda (ej: BTC, ETH, XRP)", value="BTC", key="analisis_symbol").upper()
+            symbol_analisis = st.text_input("Simbolo de la moneda (ej: BTC, ETH, XRP)", value="BTC", key="analisis_symbol").upper()
         with col2:
             temporalidad = st.selectbox("Temporalidad", ["1H", "4H", "1D", "1S (Semana)", "1M (Mes)"], index=2, key="analisis_temporalidad")
-        
-        if st.button("Generar Análisis", key="analisis_btn"):
+
+        if st.button("Generar Analisis", key="analisis_btn"):
             if not symbol_analisis:
-                st.error("Ingresa un símbolo de moneda válido")
+                st.error("Ingresa un simbolo de moneda valido")
             else:
                 if temporalidad == "1H":
                     intervalo = "1h"
                     limite = 168
-                    periodo_texto = "última semana (velas de 1 hora)"
+                    periodo_texto = "ultima semana (velas de 1 hora)"
                 elif temporalidad == "4H":
                     intervalo = "4h"
                     limite = 42
-                    periodo_texto = "última semana (velas de 4 horas)"
+                    periodo_texto = "ultima semana (velas de 4 horas)"
                 elif temporalidad == "1D":
                     intervalo = "1d"
                     limite = 30
-                    periodo_texto = "último mes (velas diarias)"
+                    periodo_texto = "ultimo mes (velas diarias)"
                 elif temporalidad == "1S (Semana)":
                     intervalo = "1w"
                     limite = 12
-                    periodo_texto = "últimos 3 meses (velas semanales)"
+                    periodo_texto = "ultimos 3 meses (velas semanales)"
                 else:  # "1M (Mes)"
                     intervalo = "1d"
                     limite = 30
-                    periodo_texto = "último mes (velas diarias)"
-                
+                    periodo_texto = "ultimo mes (velas diarias)"
+
                 with st.spinner(f"Obteniendo datos de {symbol_analisis} desde Binance ({periodo_texto})..."):
                     velas = obtener_velas_binance(symbol_analisis, interval=intervalo, limit=limite)
                     if velas and len(velas) >= 5:
                         soportes, resistencias = encontrar_soportes_resistencias(velas, num_niveles=3)
                         df_velas = pd.DataFrame(velas)
                         df_velas['timestamp'] = pd.to_datetime(df_velas['timestamp'], unit='ms')
-                        
+
                         fig = go.Figure()
                         fig.add_trace(go.Candlestick(
                             x=df_velas['timestamp'],
@@ -1517,25 +1946,25 @@ elif page == "📈 Análisis y Trading":
                             height=600,
                             template="plotly_dark"
                         )
-                        st.plotly_chart(fig, width='stretch')
-                        
+                        st.plotly_chart(fig, use_container_width=True)
+
                         col_s, col_r = st.columns(2)
                         with col_s:
                             st.subheader("📉 Soportes detectados")
                             if soportes:
                                 st.write(pd.DataFrame({"Soporte (USD)": [f"${s:.2f}" for s in soportes]}))
                             else:
-                                st.info("No se detectaron soportes claros en el período.")
+                                st.info("No se detectaron soportes claros en el periodo.")
                         with col_r:
                             st.subheader("📈 Resistencias detectadas")
                             if resistencias:
                                 st.write(pd.DataFrame({"Resistencia (USD)": [f"${r:.2f}" for r in resistencias]}))
                             else:
-                                st.info("No se detectaron resistencias claras en el período.")
+                                st.info("No se detectaron resistencias claras en el periodo.")
                     else:
-                        st.error(f"No se pudieron obtener datos de {symbol_analisis}. Verifica el símbolo o inténtalo más tarde.")
-    
-    # ========== PESTAÑA 2: HISTORIAL DE TRANSACCIONES ==========
+                        st.error(f"No se pudieron obtener datos de {symbol_analisis}. Verifica el simbolo o intentalo mas tarde.")
+
+    # ========== PESTANA 2: HISTORIAL DE TRANSACCIONES ==========
     with tab_historial:
         st.subheader("Todas las compras y ventas registradas")
         with st.spinner("Cargando historial de transacciones..."):
@@ -1561,13 +1990,13 @@ elif page == "📈 Análisis y Trading":
                 if all_transactions:
                     df_hist = pd.DataFrame(all_transactions)
                     df_hist = df_hist.sort_values("Fecha", ascending=False)
-                    st.dataframe(df_hist, width='stretch')
-                    
+                    st.dataframe(df_hist, use_container_width=True)
+
                     total_comprado = df_hist[df_hist["Tipo"] == "COMPRA"]["Monto (USD)"].sum()
                     total_vendido = df_hist[df_hist["Tipo"] == "VENTA"]["Monto (USD)"].sum()
                     total_pnl = df_hist["PnL Realizado (USD)"].sum()
                     total_fees = df_hist["Fee (USD)"].sum()
-                    
+
                     st.subheader("📊 Resumen")
                     col_a, col_b, col_c, col_d = st.columns(4)
                     col_a.metric("Total Comprado", f"${total_comprado:,.2f}")
@@ -1575,32 +2004,34 @@ elif page == "📈 Análisis y Trading":
                     col_c.metric("Total PnL Realizado", f"${total_pnl:,.2f}", delta_color="normal")
                     col_d.metric("Total Comisiones", f"${total_fees:,.2f}")
                 else:
-                    st.info("No hay transacciones de compra/venta registradas todavía.")
+                    st.info("No hay transacciones de compra/venta registradas todavia.")
             else:
-                st.info("No hay clientes registrados aún.")
-                
-                
-elif page == "📰 Noticias":
+                st.info("No hay clientes registrados aun.")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINAS EXTERNAS
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Noticias":
     mostrar_pagina_noticias()
-    
-elif page == "📊 P2P Binance":
+
+elif page == "P2P Binance":
     mostrar_pagina_p2p()    
-    
-elif page == "⚽ Inversiones Deportivas":
+
+elif page == "Inversiones Deportivas":
     mostrar_pagina_deportes()    
-    
-# ═══════════════════════════════════════
-# PÁGINA: CONFIGURACION
-# ═══════════════════════════════════════
-elif page == "⚙️ Configuracion":
-    st.title("⚙️ Configuración")
-    st.info("Configuración de Exchange y alertas (simulada).")
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGINA: CONFIGURACION
+# ═══════════════════════════════════════════════════════════════════════════════
+elif page == "Configuracion":
+    st.title("⚙️ Configuracion")
+    st.info("Configuracion de Exchange y alertas (simulada).")
     with st.form("exchange_config"):
         exchange = st.selectbox("Exchange", ["binance", "coinbase", "kraken", "bybit"])
         api_key = st.text_input("API Key", type="password")
         api_secret = st.text_input("API Secret", type="password")
         st.form_submit_button("Guardar")
-    
+
     st.divider()
     st.subheader("💾 Respaldo de Base de Datos")
     st.markdown("Descarga un respaldo completo de la base de datos (archivo .db).")
@@ -1619,4 +2050,4 @@ elif page == "⚙️ Configuracion":
                 st.error(f"Error al exportar: {r.text}")
         except Exception as e:
             st.error(f"Error: {e}")
-    st.info("Para restaurar un respaldo, reemplaza manualmente el archivo crypto_crm.db en la carpeta del proyecto y reinicia la aplicación.")
+    st.info("Para restaurar un respaldo, reemplaza manualmente el archivo crypto_crm.db en la carpeta del proyecto y reinicia la aplicacion.")

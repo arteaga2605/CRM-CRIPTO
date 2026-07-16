@@ -9,7 +9,7 @@ import shutil
 from fastapi.responses import FileResponse
 
 from app.models import init_db, SessionLocal, ClienteCripto
-from app.api import clientes, interacciones, oportunidades, tareas, lotes
+from app.api import clientes, interacciones, oportunidades, tareas, lotes, deportes
 from app.services.exchange_sync import ExchangeConnector
 from app.services.analytics import AnalyticsService
 from app.services.binance_events import BinanceEventService
@@ -38,6 +38,7 @@ app.include_router(interacciones.router)
 app.include_router(oportunidades.router)
 app.include_router(tareas.router)
 app.include_router(lotes.router)
+app.include_router(deportes.router)
 
 def get_db():
     db = SessionLocal()
@@ -48,10 +49,6 @@ def get_db():
 
 # ========== TAREAS PROGRAMADAS (APScheduler) ==========
 def actualizar_precios_automatico():
-    """
-    Actualiza el precio de mercado de todos los clientes con cantidad > 0.
-    Se ejecuta automáticamente cada hora.
-    """
     db = SessionLocal()
     try:
         crm = CRMService(db)
@@ -81,7 +78,6 @@ def generar_notificaciones_automaticas():
         db.close()
 
 def actualizar_precios_p2p():
-    """Tarea programada para guardar oportunidades P2P (por ahora solo log)."""
     try:
         for asset in ["USDT", "BTC"]:
             for fiat in ["ARS", "MXN"]:
@@ -90,7 +86,6 @@ def actualizar_precios_p2p():
     except Exception as e:
         print(f"[P2P] Error: {e}")
 
-# Configurar scheduler
 scheduler = BackgroundScheduler()
 scheduler.add_job(
     func=actualizar_precios_automatico,
@@ -134,6 +129,8 @@ def root():
             "notifications": "/notifications",
             "notifications/read": "/notifications/read (POST)",
             "p2p": "/p2p/best-prices",
+            "deportes": "/deportes",
+            "deportes/retiros": "/deportes/retiros",
             "export-db": "/export-db (GET)"
         }
     }
@@ -188,7 +185,6 @@ def get_realized_pnl_summary(db: Session = Depends(get_db)):
 
 @app.get("/p2p/best-prices")
 def get_p2p_best_prices(asset: str = "USDT", fiat: str = "ARS"):
-    """Devuelve los mejores precios P2P para un par."""
     return P2PService.get_best_prices(asset, fiat)
 
 @app.get("/binance-events")

@@ -187,7 +187,7 @@ class Notification(Base):
 
     def __repr__(self):
         return f"<Notification({self.type}: {self.message[:50]})>"
-    
+
 # ─── INVERSIONES DEPORTIVAS (MÓDULO AISLADO) ───
 class TipoMercadoDeportivo(enum.Enum):
     EQUIPO = "EQUIPO"
@@ -204,25 +204,37 @@ class InversionDeportiva(Base):
     __tablename__ = "inversiones_deportivas"
 
     id = Column(Integer, primary_key=True)
-    deporte = Column(String(50), default="BEISBOL") # Beisbol, Futbol, Baloncesto, etc.
+    deporte = Column(String(50), default="BEISBOL")
     tipo_mercado = Column(Enum(TipoMercadoDeportivo), nullable=False)
-    objetivo = Column(String(100), nullable=False) # Nombre de equipo (MAYUS), resultado o estadistica
-    
+    objetivo = Column(String(100), nullable=False)
+
     capital_invertido = Column(Numeric(20, 2), nullable=False)
     ganancia_potencial = Column(Numeric(20, 2), nullable=False)
     perdida_potencial = Column(Numeric(20, 2), nullable=False)
-    
+
     estado = Column(Enum(EstadoInversionDeportiva), default=EstadoInversionDeportiva.ABIERTA)
     pnl_realizado = Column(Numeric(20, 2), default=0.00)
-    
-    cuota_odds = Column(Numeric(10, 2), nullable=True) # Opcional: cuota decimal o americana
+
+    cuota_odds = Column(Numeric(10, 2), nullable=True)
     notas = Column(Text, default="")
-    
+
     fecha_creacion = Column(DateTime, default=datetime.utcnow)
     fecha_cierre = Column(DateTime, nullable=True)
 
     def __repr__(self):
         return f"<InversionDeportiva({self.deporte} - {self.objetivo}: {self.estado.value})>"
+
+# ─── RETIROS DEPORTIVOS (NUEVO) ───
+class RetiroDeportivo(Base):
+    __tablename__ = "retiros_deportivos"
+
+    id = Column(Integer, primary_key=True)
+    monto = Column(Numeric(20, 2), nullable=False)
+    fecha_retiro = Column(DateTime, default=datetime.utcnow)
+    notas = Column(Text, default="")
+
+    def __repr__(self):
+        return f"<RetiroDeportivo(${self.monto} el {self.fecha_retiro})>"
 
 # ─── CONFIGURACION DB ───
 DATABASE_URL = "sqlite:///./crypto_crm.db"

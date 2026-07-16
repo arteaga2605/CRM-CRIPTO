@@ -500,7 +500,19 @@ class InversionDeportiva(Base):
     fecha_cierre = Column(DateTime, nullable=True)
 
     def __repr__(self):
-        return f"<InversionDeportiva({self.deporte} - {self.objetivo}: {self.estado.value})>"        
+        return f"<InversionDeportiva({self.deporte} - {self.objetivo}: {self.estado.value})>"
+
+# ─── RETIROS DEPORTIVOS (NUEVO) ───
+class RetiroDeportivo(Base):
+    __tablename__ = "retiros_deportivos"
+
+    id = Column(Integer, primary_key=True)
+    monto = Column(Numeric(20, 2), nullable=False)
+    fecha_retiro = Column(DateTime, default=datetime.utcnow)
+    notas = Column(Text, default="")
+
+    def __repr__(self):
+        return f"<RetiroDeportivo(${self.monto} el {self.fecha_retiro})>"
 
 # ─── CONFIGURACION DB ───
 DATABASE_URL = "sqlite:///./crypto_crm.db"
@@ -4730,7 +4742,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import List, Dict, Any, Optional
 
-from app.models import InversionDeportiva, TipoMercadoDeportivo, EstadoInversionDeportiva
+from app.models import InversionDeportiva, TipoMercadoDeportivo, EstadoInversionDeportiva, RetiroDeportivo
 
 class DeportesService:
     def __init__(self, db: Session):
@@ -4790,7 +4802,38 @@ class DeportesService:
         self.db.refresh(inv)
         return inv
 
-    def obtener_resumen_y_estadisticas(self) -> Dict[str, Any]:
+    # ─── NUEVO: RETIROS ───
+    def registrar_retiro(self, monto: float, notas: str = "") -> RetiroDeportivo:
+        if monto <= 0:
+            raise ValueError("El monto del retiro debe ser mayor a cero")
+        
+        # Validar que hay capital suficiente
+        capital_disponible = self._calcular_capital_actual()
+        if monto > capital_disponible:
+            raise ValueError(f"Capital insuficiente. Disponible: ${capital_disponible:.2f}, Solicitado: ${monto:.2f}")
+
+        retiro = RetiroDeportivo(
+            monto=Decimal(str(monto)),
+            notas=notas
+        )
+        self.db.add(retiro)
+        self.db.commit()
+        self.db.refresh(retiro)
+        return retiro
+
+    def obtener_total_retiros(self) -> float:
+        total = self.db.query(func.sum(RetiroDeportivo.monto)).scalar()
+        return float(total or 0.0)
+
+    def obtener_historial_retiros(self, limit: int = 50) -> List[RetiroDeportivo]:
+        return self.db.query(RetiroDeportivo).order_by(RetiroDeportivo.fecha_retiro.desc()).limit(limit).all()
+
+    def _calcular_capital_actual(self, capital_base: float = 1000.00) -> float:
+        """Calcula el capital real disponible considerando PnL y retiros."""
+        stats = self.obtener_resumen_y_estadisticas(capital_base=capital_base)
+        return stats["capital_actual"]
+
+    def obtener_resumen_y_estadisticas(self, capital_base: float = 1000.00) -> Dict[str, Any]:
         todas = self.db.query(InversionDeportiva).all()
         cerradas = [i for i in todas if i.estado in [EstadoInversionDeportiva.GANADA, EstadoInversionDeportiva.PERDIDA]]
         
@@ -4804,6 +4847,10 @@ class DeportesService:
         pnl_neto = sum(float(i.pnl_realizado) for i in cerradas)
         
         win_rate = (ganadas / len(cerradas) * 100) if cerradas else 0.0
+
+        # Retiros
+        total_retiros = self.obtener_total_retiros()
+        capital_actual = capital_base + pnl_neto - total_retiros
 
         # Análisis por Equipo / Objetivo (Quién genera más ganancias y cuántas veces se invirtió)
         stats_objetivos = {}
@@ -4844,6 +4891,8 @@ class DeportesService:
             "capital_en_juego": round(capital_en_juego, 2),
             "capital_total_historico": round(capital_total_hist, 2),
             "pnl_neto": round(pnl_neto, 2),
+            "total_retiros": round(total_retiros, 2),
+            "capital_actual": round(capital_actual, 2),
             "equipo_mas_rentable": equipo_mas_rentable[0],
             "max_ganancia_equipo": round(equipo_mas_rentable[1]["pnl"], 2),
             "desglose_por_objetivo": [
@@ -4905,6 +4954,10 @@ class InversionCreate(BaseModel):
     cuota: Optional[float] = None
     notas: Optional[str] = ""
 
+class RetiroCreate(BaseModel):
+    monto: float
+    notas: Optional[str] = ""
+
 @router.post("/", response_model=dict)
 def crear(inv: InversionCreate, db: Session = Depends(get_db)):
     srv = DeportesService(db)
@@ -4928,6 +4981,38 @@ def liquidar(inv_id: int, estado: str, db: Session = Depends(get_db)):
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+# ─── NUEVOS ENDPOINTS DE RETIRO ───
+@router.post("/retiros", response_model=dict)
+def crear_retiro(data: RetiroCreate, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    try:
+        res = srv.registrar_retiro(monto=data.monto, notas=data.notas or "")
+        return {
+            "id": res.id,
+            "monto": float(res.monto),
+            "fecha_retiro": res.fecha_retiro.isoformat(),
+            "notas": res.notas,
+            "capital_restante": srv._calcular_capital_actual()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/retiros")
+def listar_retiros(limit: int = 50, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    retiros = srv.obtener_historial_retiros(limit=limit)
+    return [
+        {
+            "id": r.id,
+            "monto": float(r.monto),
+            "fecha_retiro": r.fecha_retiro.isoformat(),
+            "notas": r.notas
+        }
+        for r in retiros
+    ]
+
 ================================================================================
   FIN DE ARCHIVO: app/api/deportes.py
 ================================================================================
@@ -4945,12 +5030,15 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 from sqlalchemy.orm import Session
 from app.models import SessionLocal, InversionDeportiva, EstadoInversionDeportiva
 from app.services.deportes_service import DeportesService
 
 # MODIFICACIÓN 3: Define aquí el capital base que tienes en tu cuenta deportiva
 CAPITAL_BASE_INICIAL = 1000.00 
+
+API_URL = "http://localhost:8000"
 
 def mostrar_pagina_deportes():
     st.title("⚽ Inversiones y Apuestas Deportivas")
@@ -4959,9 +5047,10 @@ def mostrar_pagina_deportes():
     db = SessionLocal()
     try:
         srv = DeportesService(db)
-        stats = srv.obtener_resumen_y_estadisticas()
+        stats = srv.obtener_resumen_y_estadisticas(capital_base=CAPITAL_BASE_INICIAL)
 
-        capital_actual = CAPITAL_BASE_INICIAL + stats['pnl_neto']
+        capital_actual = stats['capital_actual']
+        total_retiros = stats['total_retiros']
 
         # ─── METRICAS PRINCIPALES ───
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -4970,6 +5059,86 @@ def mostrar_pagina_deportes():
         col3.metric("Capital en Juego", f"${stats['capital_en_juego']:,.2f}")
         col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"${stats['max_ganancia_equipo']:,.2f}")
         col5.metric("Total Apuestas", f"{stats['total_inversiones']} ({stats['ganadas']}G / {stats['perdidas']}P)")
+
+        st.divider()
+
+        # ─── NUEVA SECCION: RETIROS ───
+        st.subheader("💰 Retiro de Ganancias / Capital")
+        
+        col_r1, col_r2 = st.columns([2, 3])
+        
+        with col_r1:
+            with st.expander("⬇️ Registrar Nuevo Retiro", expanded=False):
+                st.info(f"Capital disponible para retirar: **${capital_actual:,.2f}**")
+                with st.form("form_retiro"):
+                    monto_retiro = st.number_input(
+                        "Monto a retirar ($)", 
+                        min_value=0.01, 
+                        max_value=float(capital_actual) if capital_actual > 0 else 0.01,
+                        value=min(100.0, float(capital_actual)) if capital_actual > 0 else 0.01,
+                        step=10.0,
+                        format="%.2f"
+                    )
+                    notas_retiro = st.text_input("Motivo / Notas del retiro", value="Retiro de ganancias")
+                    
+                    submitted_retiro = st.form_submit_button("💸 Retirar Capital", type="primary", use_container_width=True)
+                    
+                    if submitted_retiro:
+                        if monto_retiro <= 0:
+                            st.error("El monto debe ser mayor a cero.")
+                        elif monto_retiro > capital_actual:
+                            st.error(f"Fondos insuficientes. Capital disponible: ${capital_actual:,.2f}")
+                        else:
+                            try:
+                                r = requests.post(
+                                    f"{API_URL}/deportes/retiros",
+                                    json={"monto": monto_retiro, "notas": notas_retiro},
+                                    timeout=10
+                                )
+                                if r.status_code == 200:
+                                    data = r.json()
+                                    st.success(f"✅ Retiro de ${data['monto']:,.2f} registrado exitosamente!")
+                                    st.info(f"Capital restante: ${data['capital_restante']:,.2f}")
+                                    st.rerun()
+                                elif r.status_code == 400:
+                                    st.error(f"Error: {r.json().get('detail', 'Solicitud inválida')}")
+                                else:
+                                    st.error(f"Error del servidor: {r.status_code}")
+                            except Exception as e:
+                                st.error(f"Error de conexión: {e}")
+
+        with col_r2:
+            with st.expander("📜 Historial de Retiros", expanded=False):
+                try:
+                    r = requests.get(f"{API_URL}/deportes/retiros?limit=20", timeout=10)
+                    if r.status_code == 200:
+                        retiros = r.json()
+                        if retiros:
+                            df_retiros = pd.DataFrame([{
+                                "Fecha": datetime.fromisoformat(rt["fecha_retiro"]).strftime("%Y-%m-%d %H:%M"),
+                                "Monto": float(rt["monto"]),
+                                "Notas": rt.get("notas", "")
+                            } for rt in retiros])
+                            
+                            st.dataframe(df_retiros, use_container_width=True, hide_index=True)
+                            
+                            fig_ret = px.bar(
+                                df_retiros.iloc[::-1],
+                                x="Fecha",
+                                y="Monto",
+                                text="Monto",
+                                title="Historial de Retiros",
+                                color="Monto",
+                                color_continuous_scale="Reds"
+                            )
+                            fig_ret.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+                            st.plotly_chart(fig_ret, use_container_width=True)
+                        else:
+                            st.info("No hay retiros registrados todavía.")
+                    else:
+                        st.warning("No se pudo cargar el historial de retiros.")
+                except Exception as e:
+                    st.error(f"Error cargando retiros: {e}")
 
         st.divider()
 

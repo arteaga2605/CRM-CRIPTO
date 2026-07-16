@@ -25,6 +25,10 @@ class InversionCreate(BaseModel):
     cuota: Optional[float] = None
     notas: Optional[str] = ""
 
+class RetiroCreate(BaseModel):
+    monto: float
+    notas: Optional[str] = ""
+
 @router.post("/", response_model=dict)
 def crear(inv: InversionCreate, db: Session = Depends(get_db)):
     srv = DeportesService(db)
@@ -47,3 +51,41 @@ def liquidar(inv_id: int, estado: str, db: Session = Depends(get_db)):
         return {"id": res.id, "nuevo_estado": res.estado.value, "pnl": float(res.pnl_realizado)}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+# ─── ENDPOINTS DE RETIRO ───
+@router.post("/retiros", response_model=dict)
+def crear_retiro(data: RetiroCreate, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    try:
+        res = srv.registrar_retiro(monto=data.monto, notas=data.notas or "")
+        return {
+            "id": res.id,
+            "monto": float(res.monto),
+            "fecha_retiro": res.fecha_retiro.isoformat(),
+            "notas": res.notas,
+            "capital_restante": srv._calcular_capital_actual()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/retiros")
+def listar_retiros(limit: int = 50, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    retiros = srv.obtener_historial_retiros(limit=limit)
+    return [
+        {
+            "id": r.id,
+            "monto": float(r.monto),
+            "fecha_retiro": r.fecha_retiro.isoformat(),
+            "notas": r.notas
+        }
+        for r in retiros
+    ]
+
+# ─── NUEVO: PnL DIARIO ───
+@router.get("/pnl-diario")
+def pnl_diario(dias: int = 7, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    return srv.pnl_diario(dias=dias)

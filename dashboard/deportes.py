@@ -9,12 +9,15 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import requests
 from sqlalchemy.orm import Session
 from app.models import SessionLocal, InversionDeportiva, EstadoInversionDeportiva
 from app.services.deportes_service import DeportesService
 
-# MODIFICACIÓN 3: Define aquí el capital base que tienes en tu cuenta deportiva
-CAPITAL_BASE_INICIAL = 4236.00 
+# Define aquí el capital base que tienes en tu cuenta deportiva
+CAPITAL_BASE_INICIAL = 1000.00 
+
+API_URL = "http://localhost:8000"
 
 def mostrar_pagina_deportes():
     st.title("⚽ Inversiones y Apuestas Deportivas")
@@ -23,9 +26,11 @@ def mostrar_pagina_deportes():
     db = SessionLocal()
     try:
         srv = DeportesService(db)
-        stats = srv.obtener_resumen_y_estadisticas()
+        stats = srv.obtener_resumen_y_estadisticas(capital_base=CAPITAL_BASE_INICIAL)
 
-        capital_actual = CAPITAL_BASE_INICIAL + stats['pnl_neto']
+        capital_actual = stats['capital_actual']
+        total_retiros = stats['total_retiros']
+        pnl_neto = stats['pnl_neto']
 
         # ─── METRICAS PRINCIPALES ───
         col1, col2, col3, col4, col5 = st.columns(5)
@@ -35,6 +40,111 @@ def mostrar_pagina_deportes():
         col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"${stats['max_ganancia_equipo']:,.2f}")
         col5.metric("Total Apuestas", f"{stats['total_inversiones']} ({stats['ganadas']}G / {stats['perdidas']}P)")
 
+        # ─── DESGLOSE TRANSPARENTE DEL CAPITAL ───
+        with st.expander("🔍 Ver desglose del cálculo de Capital", expanded=False):
+            st.markdown("""
+            <div style="background-color: #1e2a3a; padding: 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
+            <table style="width:100%; color: #e0e0e0; font-size: 14px;">
+                <tr><td style="padding: 6px 0;">💵 Capital Base Inicial</td><td style="text-align:right; font-weight:600;">${:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0;">📈 PnL Neto Acumulado (Ganadas - Perdidas)</td><td style="text-align:right; font-weight:600; color: {};">${:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.1);">💰 Subtotal (Base + PnL)</td><td style="text-align:right; font-weight:600; border-top: 1px solid rgba(255,255,255,0.1);">${:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; color: #ff6b6b;">⬇️ Total Retiros Registrados</td><td style="text-align:right; font-weight:600; color: #ff6b6b;">-${:,.2f}</td></tr>
+                <tr><td style="padding: 10px 0; border-top: 2px solid #ffd700; font-size: 16px; font-weight:700; color: #ffd700;">🏦 CAPITAL ACTUAL REAL</td><td style="text-align:right; font-weight:700; color: #ffd700; border-top: 2px solid #ffd700; font-size: 16px;">${:,.2f}</td></tr>
+            </table>
+            </div>
+            """.format(
+                CAPITAL_BASE_INICIAL,
+                "#00e676" if pnl_neto >= 0 else "#ff6b6b", pnl_neto,
+                CAPITAL_BASE_INICIAL + pnl_neto,
+                total_retiros,
+                capital_actual
+            ), unsafe_allow_html=True)
+
+            if total_retiros > 0:
+                st.info(f"ℹ️ Tu capital muestra ${total_retiros:,.2f} menos porque tienes retiros registrados en el sistema. Si hiciste retiros de prueba, puedes eliminarlos directamente de la tabla `retiros_deportivos` en la base de datos si deseas revertirlos.")
+            else:
+                st.success("✅ No tienes retiros registrados. El capital actual refleja únicamente tu base inicial más el PnL neto.")
+
+        st.divider()
+
+        # ─── SECCION: RETIROS ───
+        st.subheader("💰 Retiro de Ganancias / Capital")
+
+        col_r1, col_r2 = st.columns([2, 3])
+
+        with col_r1:
+            with st.expander("⬇️ Registrar Nuevo Retiro", expanded=False):
+                st.info(f"Capital disponible para retirar: **${capital_actual:,.2f}**")
+                with st.form("form_retiro"):
+                    monto_retiro = st.number_input(
+                        "Monto a retirar ($)", 
+                        min_value=0.01, 
+                        max_value=float(capital_actual) if capital_actual > 0 else 0.01,
+                        value=min(100.0, float(capital_actual)) if capital_actual > 0 else 0.01,
+                        step=10.0,
+                        format="%.2f"
+                    )
+                    notas_retiro = st.text_input("Motivo / Notas del retiro", value="Retiro de ganancias")
+
+                    submitted_retiro = st.form_submit_button("💸 Retirar Capital", type="primary", use_container_width=True)
+
+                    if submitted_retiro:
+                        if monto_retiro <= 0:
+                            st.error("El monto debe ser mayor a cero.")
+                        elif monto_retiro > capital_actual:
+                            st.error(f"Fondos insuficientes. Capital disponible: ${capital_actual:,.2f}")
+                        else:
+                            try:
+                                r = requests.post(
+                                    f"{API_URL}/deportes/retiros",
+                                    json={"monto": monto_retiro, "notas": notas_retiro},
+                                    timeout=10
+                                )
+                                if r.status_code == 200:
+                                    data = r.json()
+                                    st.success(f"✅ Retiro de ${data['monto']:,.2f} registrado exitosamente!")
+                                    st.info(f"Capital restante: ${data['capital_restante']:,.2f}")
+                                    st.rerun()
+                                elif r.status_code == 400:
+                                    st.error(f"Error: {r.json().get('detail', 'Solicitud inválida')}")
+                                else:
+                                    st.error(f"Error del servidor: {r.status_code}")
+                            except Exception as e:
+                                st.error(f"Error de conexión: {e}")
+
+        with col_r2:
+            with st.expander("📜 Historial de Retiros", expanded=False):
+                try:
+                    r = requests.get(f"{API_URL}/deportes/retiros?limit=20", timeout=10)
+                    if r.status_code == 200:
+                        retiros = r.json()
+                        if retiros:
+                            df_retiros = pd.DataFrame([{
+                                "Fecha": datetime.fromisoformat(rt["fecha_retiro"]).strftime("%Y-%m-%d %H:%M"),
+                                "Monto": float(rt["monto"]),
+                                "Notas": rt.get("notas", "")
+                            } for rt in retiros])
+
+                            st.dataframe(df_retiros, use_container_width=True, hide_index=True)
+
+                            fig_ret = px.bar(
+                                df_retiros.iloc[::-1],
+                                x="Fecha",
+                                y="Monto",
+                                text="Monto",
+                                title="Historial de Retiros",
+                                color="Monto",
+                                color_continuous_scale="Reds"
+                            )
+                            fig_ret.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+                            st.plotly_chart(fig_ret, use_container_width=True)
+                        else:
+                            st.info("No hay retiros registrados todavía.")
+                    else:
+                        st.warning("No se pudo cargar el historial de retiros.")
+                except Exception as e:
+                    st.error(f"Error cargando retiros: {e}")
+
         st.divider()
 
         # ─── REPORTE POR FECHAS ───
@@ -42,31 +152,29 @@ def mostrar_pagina_deportes():
         with st.expander("Generar Reporte (Semanal, Mensual o Personalizado)", expanded=False):
             col_d1, col_d2, col_d3 = st.columns([2, 2, 1])
             with col_d1:
-                # Por defecto selecciona los últimos 7 días
                 fecha_inicio_input = st.date_input("Fecha Inicio", value=datetime.today().date() - timedelta(days=7))
             with col_d2:
                 fecha_fin_input = st.date_input("Fecha Fin", value=datetime.today().date())
             with col_d3:
-                st.write("") # Espaciador
-                st.write("") # Espaciador
+                st.write("")
+                st.write("")
                 generar_reporte = st.button("📊 Generar Reporte", use_container_width=True)
-            
+
             if generar_reporte:
                 if fecha_inicio_input > fecha_fin_input:
                     st.error("La fecha de inicio no puede ser posterior a la fecha de fin.")
                 else:
-                    # Convertir a datetime exactos para la consulta a la BD
                     dt_inicio = datetime.combine(fecha_inicio_input, datetime.min.time())
                     dt_fin = datetime.combine(fecha_fin_input, datetime.max.time())
-                    
+
                     reporte = srv.obtener_reporte_por_fechas(dt_inicio, dt_fin)
-                    
+
                     st.markdown("### 📋 Resultados del Reporte")
                     r_col1, r_col2, r_col3, r_col4 = st.columns(4)
                     r_col1.metric("Total Inversiones", reporte["total_inversiones"])
                     r_col2.metric("✅ Ganadas", reporte["ganadas"])
                     r_col3.metric("❌ Perdidas", reporte["perdidas"])
-                    
+
                     pnl_valor = reporte['pnl_total']
                     r_col4.metric("💰 PnL Total", f"${pnl_valor:,.2f}", 
                                   delta=f"${pnl_valor:,.2f}" if pnl_valor >= 0 else f"-${abs(pnl_valor):,.2f}",
@@ -90,9 +198,9 @@ def mostrar_pagina_deportes():
                     capital = st.number_input("Capital Invertido ($)", min_value=1.0, value=20.0, step=5.0)
                     ganancia_pot = st.number_input("Ganancia Total a Cobrar ($)", min_value=0.0, value=38.0, step=5.0, help="El total que paga el ticket (Inversión + Ganancia)")
                     perdida_pot = st.number_input("Pérdida Potencial ($)", min_value=0.0, value=20.0, step=5.0)
-                
+
                 notas = st.text_input("Notas o Análisis del partido")
-                
+
                 if st.form_submit_button("Registrar Inversión"):
                     if not objetivo:
                         st.error("Por favor ingresa un equipo o resultado.")
@@ -101,12 +209,12 @@ def mostrar_pagina_deportes():
                         st.success(f"Inversión registrada para: {objetivo}")
                         st.rerun()
 
-        # ─── GRÁFICOS ANALÍTICOS (MODIFICADO PARA MOSTRAR SOLO LAS ÚLTIMAS 10) ───
+        # ─── GRÁFICOS ANALÍTICOS ───
         ultimas_10 = stats.get("ultimas_10_inversiones", [])
         if ultimas_10:
             df_ultimas = pd.DataFrame(ultimas_10)
             df_ultimas["etiqueta"] = df_ultimas["id"].astype(str) + " - " + df_ultimas["objetivo"]
-            
+
             g_col1, g_col2 = st.columns(2)
             with g_col1:
                 st.subheader("🏆 PnL de las Últimas 10 Inversiones")
@@ -118,7 +226,7 @@ def mostrar_pagina_deportes():
                 )
                 fig_pnl.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
                 st.plotly_chart(fig_pnl, use_container_width=True)
-                
+
             with g_col2:
                 st.subheader("📊 Deporte en las Últimas 10")
                 fig_pie = px.pie(
@@ -130,6 +238,43 @@ def mostrar_pagina_deportes():
                 st.plotly_chart(fig_pie, use_container_width=True)
         else:
             st.info("No hay estadísticas históricas cerradas aún para generar gráficos.")
+
+        # ─── NUEVO: GRÁFICO DE LÍNEA PnL DIARIO (ÚLTIMOS 7 DÍAS) ───
+        st.divider()
+        st.subheader("📈 PnL Diario (Últimos 7 días)")
+        try:
+            r = requests.get(f"{API_URL}/deportes/pnl-diario?dias=7", timeout=10)
+            if r.status_code == 200:
+                pnl_data = r.json()
+                if pnl_data:
+                    df_pnl_dia = pd.DataFrame(pnl_data)
+                    fig_line = go.Figure()
+                    fig_line.add_trace(go.Scatter(
+                        x=df_pnl_dia["fecha"],
+                        y=df_pnl_dia["pnl"],
+                        mode='lines+markers+text',
+                        name='PnL',
+                        line=dict(color='#00e676', width=3),
+                        marker=dict(size=8, color=['#00e676' if v >= 0 else '#ff6b6b' for v in df_pnl_dia["pnl"]]),
+                        text=df_pnl_dia["pnl"].apply(lambda x: f"${x:.2f}"),
+                        textposition="top center"
+                    ))
+                    fig_line.update_layout(
+                        title="Evolución diaria de Ganancias / Pérdidas",
+                        xaxis_title="Fecha",
+                        yaxis_title="PnL (USD)",
+                        height=400,
+                        template="plotly_dark",
+                        showlegend=False
+                    )
+                    fig_line.add_hline(y=0, line_dash="dash", line_color="rgba(255,255,255,0.3)")
+                    st.plotly_chart(fig_line, use_container_width=True)
+                else:
+                    st.info("No hay datos de PnL diario todavía.")
+            else:
+                st.warning("No se pudo cargar el PnL diario.")
+        except Exception as e:
+            st.error(f"Error cargando PnL diario: {e}")
 
         # ─── TABLA DE LIQUIDACIÓN DE APUESTAS ABIERTAS ───
         st.subheader("⏳ Inversiones Abiertas (Pendientes por Resultado)")

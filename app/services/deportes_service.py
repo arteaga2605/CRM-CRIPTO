@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import List, Dict, Any, Optional
 
-from app.models import InversionDeportiva, TipoMercadoDeportivo, EstadoInversionDeportiva, RetiroDeportivo
+from app.models import InversionDeportiva, TipoMercadoDeportivo, EstadoInversionDeportiva, RetiroDeportivo, InyeccionCapitalDeportivo
 
 class DeportesService:
     def __init__(self, db: Session):
@@ -86,12 +86,32 @@ class DeportesService:
     def obtener_historial_retiros(self, limit: int = 50) -> List[RetiroDeportivo]:
         return self.db.query(RetiroDeportivo).order_by(RetiroDeportivo.fecha_retiro.desc()).limit(limit).all()
 
+    # ─── INYECCIONES DE CAPITAL (NUEVO) ───
+    def registrar_inyeccion(self, monto: float, notas: str = "") -> InyeccionCapitalDeportivo:
+        if monto <= 0:
+            raise ValueError("El monto de la inyección debe ser mayor a cero")
+
+        inyeccion = InyeccionCapitalDeportivo(
+            monto=Decimal(str(monto)),
+            notas=notas
+        )
+        self.db.add(inyeccion)
+        self.db.commit()
+        self.db.refresh(inyeccion)
+        return inyeccion
+
+    def obtener_total_inyecciones(self) -> float:
+        total = self.db.query(func.sum(InyeccionCapitalDeportivo.monto)).scalar()
+        return float(total or 0.0)
+
+    def obtener_historial_inyecciones(self, limit: int = 50) -> List[InyeccionCapitalDeportivo]:
+        return self.db.query(InyeccionCapitalDeportivo).order_by(InyeccionCapitalDeportivo.fecha_inyeccion.desc()).limit(limit).all()
+
     def _calcular_capital_actual(self, capital_base: float = 1000.00) -> float:
-        """Calcula el capital real disponible considerando PnL y retiros."""
+        """Calcula el capital real disponible considerando base, inyecciones, PnL y retiros."""
         stats = self.obtener_resumen_y_estadisticas(capital_base=capital_base)
         return stats["capital_actual"]
 
-    # ─── NUEVO: PnL DIARIO ───
     def pnl_diario(self, dias: int = 7) -> List[Dict[str, Any]]:
         """Devuelve el PnL realizado agrupado por día de cierre (últimos N días)."""
         desde = datetime.utcnow() - timedelta(days=dias)
@@ -106,7 +126,6 @@ class DeportesService:
             InversionDeportiva.fecha_cierre >= desde
         ).group_by(func.date(InversionDeportiva.fecha_cierre)).order_by("fecha").all()
 
-        # Rellenar días sin datos con 0
         pnl_por_dia = {str(r.fecha): float(r.pnl or 0) for r in resultados}
         hoy = datetime.utcnow().date()
         datos_finales = []
@@ -135,7 +154,8 @@ class DeportesService:
         win_rate = (ganadas / len(cerradas) * 100) if cerradas else 0.0
 
         total_retiros = self.obtener_total_retiros()
-        capital_actual = capital_base + pnl_neto - total_retiros
+        total_inyecciones = self.obtener_total_inyecciones()
+        capital_actual = capital_base + total_inyecciones + pnl_neto - total_retiros
 
         stats_objetivos = {}
         for idx in cerradas:
@@ -175,6 +195,7 @@ class DeportesService:
             "capital_total_historico": round(capital_total_hist, 2),
             "pnl_neto": round(pnl_neto, 2),
             "total_retiros": round(total_retiros, 2),
+            "total_inyecciones": round(total_inyecciones, 2),
             "capital_actual": round(capital_actual, 2),
             "equipo_mas_rentable": equipo_mas_rentable[0],
             "max_ganancia_equipo": round(equipo_mas_rentable[1]["pnl"], 2),

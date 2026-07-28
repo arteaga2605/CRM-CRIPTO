@@ -29,6 +29,10 @@ class RetiroCreate(BaseModel):
     monto: float
     notas: Optional[str] = ""
 
+class InyeccionCreate(BaseModel):
+    monto: float
+    notas: Optional[str] = ""
+
 @router.post("/", response_model=dict)
 def crear(inv: InversionCreate, db: Session = Depends(get_db)):
     srv = DeportesService(db)
@@ -84,7 +88,39 @@ def listar_retiros(limit: int = 50, db: Session = Depends(get_db)):
         for r in retiros
     ]
 
-# ─── NUEVO: PnL DIARIO ───
+# ─── ENDPOINTS DE INYECCION DE CAPITAL (NUEVO) ───
+@router.post("/inyecciones", response_model=dict)
+def crear_inyeccion(data: InyeccionCreate, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    try:
+        res = srv.registrar_inyeccion(monto=data.monto, notas=data.notas or "")
+        return {
+            "id": res.id,
+            "monto": float(res.monto),
+            "fecha_inyeccion": res.fecha_inyeccion.isoformat(),
+            "notas": res.notas,
+            "capital_actual": srv._calcular_capital_actual()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/inyecciones")
+def listar_inyecciones(limit: int = 50, db: Session = Depends(get_db)):
+    srv = DeportesService(db)
+    inyecciones = srv.obtener_historial_inyecciones(limit=limit)
+    return [
+        {
+            "id": ic.id,
+            "monto": float(ic.monto),
+            "fecha_inyeccion": ic.fecha_inyeccion.isoformat(),
+            "notas": ic.notas
+        }
+        for ic in inyecciones
+    ]
+
+# ─── PnL DIARIO ───
 @router.get("/pnl-diario")
 def pnl_diario(dias: int = 7, db: Session = Depends(get_db)):
     srv = DeportesService(db)

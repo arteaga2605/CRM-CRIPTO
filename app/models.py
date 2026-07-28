@@ -224,7 +224,7 @@ class InversionDeportiva(Base):
     def __repr__(self):
         return f"<InversionDeportiva({self.deporte} - {self.objetivo}: {self.estado.value})>"
 
-# ─── RETIROS DEPORTIVOS (NUEVO) ───
+# ─── RETIROS DEPORTIVOS ───
 class RetiroDeportivo(Base):
     __tablename__ = "retiros_deportivos"
 
@@ -235,6 +235,18 @@ class RetiroDeportivo(Base):
 
     def __repr__(self):
         return f"<RetiroDeportivo(${self.monto} el {self.fecha_retiro})>"
+
+# ─── INYECCIONES DE CAPITAL DEPORTIVAS (NUEVO) ───
+class InyeccionCapitalDeportivo(Base):
+    __tablename__ = "inyecciones_capital_deportivo"
+
+    id = Column(Integer, primary_key=True)
+    monto = Column(Numeric(20, 2), nullable=False)
+    fecha_inyeccion = Column(DateTime, default=datetime.utcnow)
+    notas = Column(Text, default="")
+
+    def __repr__(self):
+        return f"<InyeccionCapitalDeportivo(${self.monto} el {self.fecha_inyeccion})>"
 
 # ─── CONFIGURACION DB ───
 DATABASE_URL = "sqlite:///./crypto_crm.db"

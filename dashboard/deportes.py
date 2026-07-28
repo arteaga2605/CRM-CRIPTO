@@ -30,6 +30,7 @@ def mostrar_pagina_deportes():
 
         capital_actual = stats['capital_actual']
         total_retiros = stats['total_retiros']
+        total_inyecciones = stats['total_inyecciones']
         pnl_neto = stats['pnl_neto']
 
         # ─── METRICAS PRINCIPALES ───
@@ -46,34 +47,116 @@ def mostrar_pagina_deportes():
             <div style="background-color: #1e2a3a; padding: 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
             <table style="width:100%; color: #e0e0e0; font-size: 14px;">
                 <tr><td style="padding: 6px 0;">💵 Capital Base Inicial</td><td style="text-align:right; font-weight:600;">${:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; color: #00e676;">⬆️ Total Inyecciones de Capital</td><td style="text-align:right; font-weight:600; color: #00e676;">+${:,.2f}</td></tr>
                 <tr><td style="padding: 6px 0;">📈 PnL Neto Acumulado (Ganadas - Perdidas)</td><td style="text-align:right; font-weight:600; color: {};">${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.1);">💰 Subtotal (Base + PnL)</td><td style="text-align:right; font-weight:600; border-top: 1px solid rgba(255,255,255,0.1);">${:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.1);">💰 Subtotal (Base + Inyecciones + PnL)</td><td style="text-align:right; font-weight:600; border-top: 1px solid rgba(255,255,255,0.1);">${:,.2f}</td></tr>
                 <tr><td style="padding: 6px 0; color: #ff6b6b;">⬇️ Total Retiros Registrados</td><td style="text-align:right; font-weight:600; color: #ff6b6b;">-${:,.2f}</td></tr>
                 <tr><td style="padding: 10px 0; border-top: 2px solid #ffd700; font-size: 16px; font-weight:700; color: #ffd700;">🏦 CAPITAL ACTUAL REAL</td><td style="text-align:right; font-weight:700; color: #ffd700; border-top: 2px solid #ffd700; font-size: 16px;">${:,.2f}</td></tr>
             </table>
             </div>
             """.format(
                 CAPITAL_BASE_INICIAL,
+                total_inyecciones,
                 "#00e676" if pnl_neto >= 0 else "#ff6b6b", pnl_neto,
-                CAPITAL_BASE_INICIAL + pnl_neto,
+                CAPITAL_BASE_INICIAL + total_inyecciones + pnl_neto,
                 total_retiros,
                 capital_actual
             ), unsafe_allow_html=True)
 
+            if total_inyecciones > 0:
+                st.success(f"💡 Has inyectado ${total_inyecciones:,.2f} de capital adicional. Tu inversión total de bolsillo es: ${CAPITAL_BASE_INICIAL + total_inyecciones:,.2f}")
             if total_retiros > 0:
-                st.info(f"ℹ️ Tu capital muestra ${total_retiros:,.2f} menos porque tienes retiros registrados en el sistema. Si hiciste retiros de prueba, puedes eliminarlos directamente de la tabla `retiros_deportivos` en la base de datos si deseas revertirlos.")
-            else:
-                st.success("✅ No tienes retiros registrados. El capital actual refleja únicamente tu base inicial más el PnL neto.")
+                st.info(f"ℹ️ Has retirado ${total_retiros:,.2f} en total.")
+
+            # Comparativa: ¿Estoy en ganancia o pérdida respecto a lo invertido?
+            dinero_de_bolsillo = CAPITAL_BASE_INICIAL + total_inyecciones
+            ganancia_vs_bolsillo = capital_actual - dinero_de_bolsillo
+            if dinero_de_bolsillo > 0:
+                if ganancia_vs_bolsillo >= 0:
+                    st.success(f"🎯 **Estás en GANANCIA** respecto a tu dinero de bolsillo: +${ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
+                else:
+                    st.error(f"🎯 **Estás en PÉRDIDA** respecto a tu dinero de bolsillo: ${ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
 
         st.divider()
 
-        # ─── SECCION: RETIROS ───
-        st.subheader("💰 Retiro de Ganancias / Capital")
+        # ─── SECCION: INYECCIONES Y RETIROS (DOS COLUMNAS) ───
+        st.subheader("💰 Movimientos de Capital (Inyecciones / Retiros)")
 
-        col_r1, col_r2 = st.columns([2, 3])
+        col_i1, col_r2 = st.columns(2)
 
-        with col_r1:
-            with st.expander("⬇️ Registrar Nuevo Retiro", expanded=False):
+        # ─── INYECCIONES ───
+        with col_i1:
+            with st.expander("⬆️ Inyectar Capital Nuevo", expanded=False):
+                st.info(f"Capital actual: **${capital_actual:,.2f}**")
+                with st.form("form_inyeccion"):
+                    monto_inyeccion = st.number_input(
+                        "Monto a inyectar ($)", 
+                        min_value=0.01, 
+                        value=100.0,
+                        step=10.0,
+                        format="%.2f"
+                    )
+                    notas_inyeccion = st.text_input("Notas / Origen del capital", value="Recarga de bankroll")
+
+                    submitted_inyeccion = st.form_submit_button("💵 Inyectar Capital", type="primary", use_container_width=True)
+
+                    if submitted_inyeccion:
+                        if monto_inyeccion <= 0:
+                            st.error("El monto debe ser mayor a cero.")
+                        else:
+                            try:
+                                r = requests.post(
+                                    f"{API_URL}/deportes/inyecciones",
+                                    json={"monto": monto_inyeccion, "notas": notas_inyeccion},
+                                    timeout=10
+                                )
+                                if r.status_code == 200:
+                                    data = r.json()
+                                    st.success(f"✅ Inyección de ${data['monto']:,.2f} registrada!")
+                                    st.info(f"Capital actualizado: ${data['capital_actual']:,.2f}")
+                                    st.rerun()
+                                elif r.status_code == 400:
+                                    st.error(f"Error: {r.json().get('detail', 'Solicitud inválida')}")
+                                else:
+                                    st.error(f"Error del servidor: {r.status_code}")
+                            except Exception as e:
+                                st.error(f"Error de conexión: {e}")
+
+            with st.expander("📜 Historial de Inyecciones", expanded=False):
+                try:
+                    r = requests.get(f"{API_URL}/deportes/inyecciones?limit=20", timeout=10)
+                    if r.status_code == 200:
+                        inyecciones = r.json()
+                        if inyecciones:
+                            df_iny = pd.DataFrame([{
+                                "Fecha": datetime.fromisoformat(ic["fecha_inyeccion"]).strftime("%Y-%m-%d %H:%M"),
+                                "Monto": float(ic["monto"]),
+                                "Notas": ic.get("notas", "")
+                            } for ic in inyecciones])
+
+                            st.dataframe(df_iny, use_container_width=True, hide_index=True)
+
+                            fig_iny = px.bar(
+                                df_iny.iloc[::-1],
+                                x="Fecha",
+                                y="Monto",
+                                text="Monto",
+                                title="Historial de Inyecciones de Capital",
+                                color="Monto",
+                                color_continuous_scale="Greens"
+                            )
+                            fig_iny.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+                            st.plotly_chart(fig_iny, use_container_width=True)
+                        else:
+                            st.info("No hay inyecciones registradas todavía.")
+                    else:
+                        st.warning("No se pudo cargar el historial de inyecciones.")
+                except Exception as e:
+                    st.error(f"Error cargando inyecciones: {e}")
+
+        # ─── RETIROS ───
+        with col_r2:
+            with st.expander("⬇️ Retirar Capital / Ganancias", expanded=False):
                 st.info(f"Capital disponible para retirar: **${capital_actual:,.2f}**")
                 with st.form("form_retiro"):
                     monto_retiro = st.number_input(
@@ -112,7 +195,6 @@ def mostrar_pagina_deportes():
                             except Exception as e:
                                 st.error(f"Error de conexión: {e}")
 
-        with col_r2:
             with st.expander("📜 Historial de Retiros", expanded=False):
                 try:
                     r = requests.get(f"{API_URL}/deportes/retiros?limit=20", timeout=10)

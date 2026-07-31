@@ -127,6 +127,7 @@ class CRMService:
             cliente.roi_porcentaje = Decimal("0")
             
         self.db.commit()
+        self.db.refresh(cliente)
         self.actualizar_estado_cliente(symbol)
         return cliente
 

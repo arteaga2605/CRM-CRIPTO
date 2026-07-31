@@ -119,11 +119,12 @@ def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(g
     return cliente_actualizado
 
 # ENDPOINT NUEVO PARA CORRECCION MANUAL DE CAPITAL
-@router.post("/{symbol}/corregir-inversion")
+@router.post("/{symbol}/corregir-inversion", response_model=ClienteCriptoResponse)
 def corregir_inversion(symbol: str, data: CorreccionInversion, db: Session = Depends(get_db)):
     crm = CRMService(db)
     try:
         cliente_actualizado = crm.corregir_inversion_total(symbol, data.nueva_inversion)
+        db.refresh(cliente_actualizado)
         return cliente_actualizado
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

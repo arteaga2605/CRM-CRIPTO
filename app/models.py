@@ -51,6 +51,7 @@ class ClienteCripto(Base):
     inversion_total = Column(Numeric(20, 8), default=0)
     valor_mercado = Column(Numeric(20, 8), default=0)
     pnl_total = Column(Numeric(20, 8), default=0)
+    pnl_realizado_acumulado = Column(Numeric(20, 8), default=0)  # NUEVO: ganancia/perdida ya realizada por ventas
     roi_porcentaje = Column(Numeric(20, 4), default=0)
 
     estado = Column(Enum(EstadoCliente), default=EstadoCliente.PROSPECTO)

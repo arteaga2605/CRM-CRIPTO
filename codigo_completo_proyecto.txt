@@ -12,7 +12,7 @@ import shutil
 from fastapi.responses import FileResponse
 
 from app.models import init_db, SessionLocal, ClienteCripto
-from app.api import clientes, interacciones, oportunidades, tareas, lotes
+from app.api import clientes, interacciones, oportunidades, tareas, lotes, deportes
 from app.services.exchange_sync import ExchangeConnector
 from app.services.analytics import AnalyticsService
 from app.services.binance_events import BinanceEventService
@@ -41,6 +41,7 @@ app.include_router(interacciones.router)
 app.include_router(oportunidades.router)
 app.include_router(tareas.router)
 app.include_router(lotes.router)
+app.include_router(deportes.router)
 
 def get_db():
     db = SessionLocal()
@@ -56,9 +57,13 @@ def actualizar_precios_automatico():
         crm = CRMService(db)
         connector = ExchangeConnector()
         clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
+        # Antes esto hacia una llamada de red POR CADA cliente, una detras de otra.
+        # Ahora se piden todos los precios en una sola llamada en lote.
+        simbolos = [c.symbol for c in clientes]
+        precios = connector.obtener_precios_batch(simbolos)
         actualizados = 0
         for cliente in clientes:
-            precio = connector.obtener_precio(cliente.symbol)
+            precio = precios.get(cliente.symbol, 0.0)
             if precio > 0:
                 crm.actualizar_precio_mercado(cliente.symbol, precio)
                 actualizados += 1
@@ -140,6 +145,29 @@ def obtener_precio_real(symbol: str, vs: str = "USDT"):
     connector = ExchangeConnector()
     precio = connector.obtener_precio(symbol.upper(), vs)
     return {"symbol": symbol.upper(), "price": precio, "vs_currency": vs}
+
+@app.post("/clientes/actualizar-precios-lote")
+def actualizar_precios_lote(vs: str = "USDT", db: Session = Depends(get_db)):
+    """
+    Actualiza el precio de mercado de TODOS los clientes con posicion abierta
+    en una sola llamada en lote a Binance, en vez de una llamada por moneda.
+    Usar este endpoint desde el boton "Actualizar todos los precios" del
+    dashboard en lugar de hacer un fetch + post por cada simbolo.
+    """
+    crm = CRMService(db)
+    connector = ExchangeConnector()
+    clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
+    simbolos = [c.symbol for c in clientes]
+    precios = connector.obtener_precios_batch(simbolos, vs)
+    actualizados, fallidos = [], []
+    for cliente in clientes:
+        precio = precios.get(cliente.symbol, 0.0)
+        if precio > 0:
+            crm.actualizar_precio_mercado(cliente.symbol, precio)
+            actualizados.append(cliente.symbol)
+        else:
+            fallidos.append(cliente.symbol)
+    return {"actualizados": actualizados, "fallidos": fallidos}
 
 @app.get("/ticker/{symbol}")
 def obtener_ticker_real(symbol: str, vs: str = "USDT"):
@@ -269,6 +297,8 @@ def export_db():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
 ================================================================================
   FIN DE ARCHIVO: app/main.py
 ================================================================================
@@ -329,6 +359,7 @@ class ClienteCripto(Base):
     inversion_total = Column(Numeric(20, 8), default=0)
     valor_mercado = Column(Numeric(20, 8), default=0)
     pnl_total = Column(Numeric(20, 8), default=0)
+    pnl_realizado_acumulado = Column(Numeric(20, 8), default=0)  # NUEVO: ganancia/perdida ya realizada por ventas
     roi_porcentaje = Column(Numeric(20, 4), default=0)
 
     estado = Column(Enum(EstadoCliente), default=EstadoCliente.PROSPECTO)
@@ -846,11 +877,22 @@ class CRMService:
 
         if cantidad > 0:
             cliente.valor_mercado = precio_dec * cantidad
-            costo_promedio = cliente.costo_promedio if cliente.costo_promedio else Decimal("0")
-            costo_total = cantidad * costo_promedio
-            if costo_total > 0:
-                cliente.pnl_total = cliente.valor_mercado - costo_total
-                cliente.roi_porcentaje = (cliente.pnl_total / costo_total) * Decimal("100")
+            # Se usa inversion_total como fuente unica de verdad del capital invertido
+            # (antes se recalculaba con costo_promedio*cantidad, lo que podia divergir
+            # por redondeos y a veces dejaba costo_total en 0, congelando el PnL).
+            inversion_total = cliente.inversion_total if cliente.inversion_total else Decimal("0")
+            pnl_realizado = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
+            pnl_no_realizado = cliente.valor_mercado - inversion_total
+            # PnL total = lo ya realizado en ventas + lo no realizado de la posicion actual.
+            # Antes esta linea sobreescribia pnl_total solo con pnl_no_realizado, borrando
+            # las ganancias/perdidas ya realizadas en ventas anteriores.
+            cliente.pnl_total = pnl_no_realizado + pnl_realizado
+            if inversion_total > 0:
+                cliente.roi_porcentaje = (cliente.pnl_total / inversion_total) * Decimal("100")
+        else:
+            # Sin posicion abierta: el PnL total es solo lo realizado historicamente
+            cliente.valor_mercado = Decimal("0")
+            cliente.pnl_total = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
@@ -867,12 +909,14 @@ class CRMService:
         precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
         cantidad = cliente.cantidad_total if cliente.cantidad_total else Decimal("0")
         cliente.valor_mercado = precio_actual * cantidad
-        
+        pnl_realizado = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
+
         if cliente.inversion_total > 0:
-            cliente.pnl_total = cliente.valor_mercado - cliente.inversion_total
+            pnl_no_realizado = cliente.valor_mercado - cliente.inversion_total
+            cliente.pnl_total = pnl_no_realizado + pnl_realizado
             cliente.roi_porcentaje = (cliente.pnl_total / cliente.inversion_total) * Decimal("100")
         else:
-            cliente.pnl_total = cliente.valor_mercado
+            cliente.pnl_total = cliente.valor_mercado + pnl_realizado
             cliente.roi_porcentaje = Decimal("0")
             
         self.db.commit()
@@ -1004,7 +1048,7 @@ class CRMService:
 
         nueva_cantidad = cant_total_cliente - cantidad_vendida
         cliente.cantidad_total = nueva_cantidad
-        cliente.pnl_total = (cliente.pnl_total if cliente.pnl_total else Decimal("0")) + pnl_total
+        cliente.pnl_realizado_acumulado = (cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")) + pnl_total
 
         # CORRECCIÓN CONTABLE: Al vender, se descarga el capital base de los lotes restantes
         if nueva_cantidad > 0:
@@ -1018,6 +1062,13 @@ class CRMService:
         else:
             cliente.costo_promedio = Decimal("0")
             cliente.inversion_total = Decimal("0")
+
+        precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
+        cliente.valor_mercado = precio_actual * nueva_cantidad
+        pnl_no_realizado = cliente.valor_mercado - cliente.inversion_total
+        cliente.pnl_total = pnl_no_realizado + cliente.pnl_realizado_acumulado
+        if cliente.inversion_total > 0:
+            cliente.roi_porcentaje = (cliente.pnl_total / cliente.inversion_total) * Decimal("100")
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
@@ -1091,6 +1142,7 @@ class CRMService:
         cliente.costo_promedio = Decimal("0")
         cliente.inversion_total = Decimal("0")
         cliente.pnl_total = Decimal("0")
+        cliente.pnl_realizado_acumulado = Decimal("0")
         cliente.valor_mercado = Decimal("0")
         cliente.roi_porcentaje = Decimal("0")
         self.db.commit()
@@ -1152,7 +1204,7 @@ class CRMService:
 
                 nueva_cantidad = cliente.cantidad_total - cantidad_vendida
                 cliente.cantidad_total = nueva_cantidad
-                cliente.pnl_total += pnl_total
+                cliente.pnl_realizado_acumulado += pnl_total
 
                 # CORRECCIÓN CONTABLE
                 if nueva_cantidad > 0:
@@ -1173,13 +1225,19 @@ class CRMService:
                 if tipo in ["staking", "airdrop", "dividendo"]:
                     cliente.cantidad_total += cantidad
 
+        pnl_realizado = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
         if cliente.cantidad_total > 0:
             precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
             cliente.valor_mercado = precio_actual * cliente.cantidad_total
             inversion_total = cliente.inversion_total
+            pnl_no_realizado = cliente.valor_mercado - inversion_total
+            cliente.pnl_total = pnl_no_realizado + pnl_realizado
             if inversion_total > 0:
-                cliente.pnl_total = cliente.valor_mercado - inversion_total
                 cliente.roi_porcentaje = (cliente.pnl_total / inversion_total) * Decimal("100")
+        else:
+            # Ya no queda posicion abierta: el PnL total es solo lo realizado historicamente
+            cliente.valor_mercado = Decimal("0")
+            cliente.pnl_total = pnl_realizado
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
@@ -1404,6 +1462,7 @@ class CRMService:
             ClienteCripto.fecha_ultimo_contacto < limite,
             ClienteCripto.cantidad_total > 0
         ).all()
+
 ================================================================================
   FIN DE ARCHIVO: app/services/crm_service.py
 ================================================================================
@@ -1610,14 +1669,33 @@ class AnalyticsService:
   ARCHIVO: app/services/exchange_sync.py
 ================================================================================
 from typing import Dict, List, Optional
+import time
 import ccxt
 from decimal import Decimal
 from datetime import datetime
 from app.models import ClienteCripto, TipoInteraccion
 from app.services.crm_service import CRMService
 
+
 class ExchangeConnector:
-    def __init__(self, api_key: str = None, secret: str = None, exchange_id: str = "binance"):
+    """
+    NOTA DE OPTIMIZACION:
+    Antes cada precio/ticker generaba una llamada de red nueva a Binance,
+    y actualizar el portafolio completo hacia una llamada POR CADA moneda,
+    una detras de otra (serial). Eso es lo que hacia lenta cada carga.
+
+    Cambios aplicados:
+    1) Cache en memoria con TTL corto (por defecto 20s) para precio/ticker
+       individuales: si la misma moneda se pide varias veces en poco tiempo
+       (por ejemplo por refrescos de Streamlit), no se vuelve a golpear la API.
+    2) Nuevo metodo obtener_precios_batch() que usa fetch_tickers() de ccxt,
+       trayendo TODOS los precios pedidos en una sola llamada HTTP, en vez de
+       una llamada por simbolo. Esto es lo que hay que usar para refrescar
+       el portafolio completo (ver main.py).
+    """
+
+    def __init__(self, api_key: str = None, secret: str = None,
+                 exchange_id: str = "binance", cache_ttl_seconds: int = 20):
         exchange_class = getattr(ccxt, exchange_id)
         config = {
             'enableRateLimit': True,
@@ -1628,19 +1706,81 @@ class ExchangeConnector:
             config['secret'] = secret
         self.exchange = exchange_class(config)
         self.is_authenticated = bool(api_key and secret)
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self._precio_cache: Dict[str, tuple] = {}   # symbol -> (precio, timestamp)
+        self._ticker_cache: Dict[str, tuple] = {}    # symbol -> (ticker_dict, timestamp)
+
+    def _cache_vigente(self, cache: dict, key: str) -> Optional[any]:
+        entry = cache.get(key)
+        if not entry:
+            return None
+        valor, ts = entry
+        if time.time() - ts < self.cache_ttl_seconds:
+            return valor
+        return None
 
     def obtener_precio(self, symbol: str, vs_currency: str = "USDT") -> float:
+        cache_key = f"{symbol}/{vs_currency}"
+        cacheado = self._cache_vigente(self._precio_cache, cache_key)
+        if cacheado is not None:
+            return cacheado
         try:
-            ticker = self.exchange.fetch_ticker(f"{symbol}/{vs_currency}")
-            return ticker['last'] or ticker['close'] or 0.0
+            ticker = self.exchange.fetch_ticker(cache_key)
+            precio = ticker['last'] or ticker['close'] or 0.0
+            self._precio_cache[cache_key] = (precio, time.time())
+            return precio
         except Exception as e:
             print(f"Error obteniendo precio de {symbol}: {e}")
             return 0.0
 
+    def obtener_precios_batch(self, symbols: List[str], vs_currency: str = "USDT") -> Dict[str, float]:
+        """
+        Trae el precio de VARIOS simbolos en UNA sola llamada de red.
+        Usar esto en vez de llamar obtener_precio() en un loop.
+        """
+        if not symbols:
+            return {}
+
+        pares = [f"{s}/{vs_currency}" for s in symbols]
+        resultado: Dict[str, float] = {}
+        pares_a_pedir = []
+
+        # Reusar cache vigente donde exista
+        for symbol, par in zip(symbols, pares):
+            cacheado = self._cache_vigente(self._precio_cache, par)
+            if cacheado is not None:
+                resultado[symbol] = cacheado
+            else:
+                pares_a_pedir.append(par)
+
+        if pares_a_pedir:
+            try:
+                tickers = self.exchange.fetch_tickers(pares_a_pedir)
+                ahora = time.time()
+                for par, ticker in tickers.items():
+                    symbol = par.split("/")[0]
+                    precio = ticker.get('last') or ticker.get('close') or 0.0
+                    self._precio_cache[par] = (precio, ahora)
+                    resultado[symbol] = precio
+            except Exception as e:
+                print(f"Error obteniendo precios en lote: {e}")
+                # Fallback: si el exchange no soporta fetch_tickers con lista,
+                # se completa uno por uno solo para lo que falto.
+                for par in pares_a_pedir:
+                    symbol = par.split("/")[0]
+                    if symbol not in resultado:
+                        resultado[symbol] = self.obtener_precio(symbol, vs_currency)
+
+        return resultado
+
     def obtener_ticker(self, symbol: str, vs_currency: str = "USDT") -> Dict:
+        cache_key = f"{symbol}/{vs_currency}"
+        cacheado = self._cache_vigente(self._ticker_cache, cache_key)
+        if cacheado is not None:
+            return cacheado
         try:
-            ticker = self.exchange.fetch_ticker(f"{symbol}/{vs_currency}")
-            return {
+            ticker = self.exchange.fetch_ticker(cache_key)
+            data = {
                 "symbol": symbol,
                 "last": ticker.get('last', 0),
                 "bid": ticker.get('bid', 0),
@@ -1653,6 +1793,8 @@ class ExchangeConnector:
                 "low": ticker.get('low', 0),
                 "timestamp": datetime.utcnow().isoformat()
             }
+            self._ticker_cache[cache_key] = (data, time.time())
+            return data
         except Exception as e:
             print(f"Error obteniendo ticker de {symbol}: {e}")
             return {}
@@ -1681,8 +1823,8 @@ class ExchangeConnector:
             raise ValueError("Se requiere API key y secret para obtener balance.")
         balance = self.exchange.fetch_balance()
         return {
-            k: float(v['total']) 
-            for k, v in balance.items() 
+            k: float(v['total'])
+            for k, v in balance.items()
             if isinstance(v, dict) and float(v.get('total', 0)) > 0
         }
 
@@ -1701,12 +1843,14 @@ class ExchangeConnector:
             print("No autenticado. No se puede sincronizar portafolio.")
             return False
         balance = self.obtener_balance()
-        for symbol, cantidad in balance.items():
-            if symbol in ['USDT', 'USDC', 'BUSD', 'FDUSD']:
-                continue
-            if cantidad <= 0:
-                continue
-            precio = self.obtener_precio(symbol)
+
+        simbolos = [s for s in balance.keys()
+                    if s not in ['USDT', 'USDC', 'BUSD', 'FDUSD'] and balance[s] > 0]
+        precios = self.obtener_precios_batch(simbolos)
+
+        for symbol in simbolos:
+            cantidad = balance[symbol]
+            precio = precios.get(symbol, 0.0)
             if precio == 0:
                 continue
             cliente = crm.obtener_cliente(symbol)
@@ -2070,7 +2214,7 @@ class P2PService:
 ================================================================================
   ARCHIVO: app/api/clientes.py
 ================================================================================
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from decimal import Decimal
@@ -2177,7 +2321,12 @@ def eliminar_cliente(symbol: str, db: Session = Depends(get_db)):
     return {"message": f"Cliente {symbol} eliminado"}
 
 @router.post("/{symbol}/actualizar-precio")
-def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(get_db)):
+def actualizar_precio(symbol: str, precio: float = Body(default=None, embed=True), db: Session = Depends(get_db)):
+    # FIX: "precio" es un tipo simple (float), asi que FastAPI lo trataba como
+    # query parameter por defecto. El frontend lo manda como JSON body
+    # ({"precio": precio_real}), por lo que "precio" llegaba SIEMPRE None y el
+    # backend terminaba pidiendo un precio nuevo a Binance en vez de usar el
+    # valor recibido.
     crm = CRMService(db)
     cliente = crm.obtener_cliente(symbol)
     if not cliente:
@@ -2190,6 +2339,31 @@ def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(g
     cliente_actualizado = crm.actualizar_precio_mercado(symbol, precio)
     return cliente_actualizado
 
+# ENDPOINT NUEVO: ACTUALIZAR TODOS LOS PRECIOS EN UNA SOLA LLAMADA (LOTE)
+@router.post("/actualizar-precios-lote")
+def actualizar_precios_lote(db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    connector = ExchangeConnector()
+    clientes = crm.listar_clientes()
+    actualizados = []
+    fallidos = []
+    for cliente in clientes:
+        try:
+            precio = connector.obtener_precio(cliente.symbol)
+            if precio and precio > 0:
+                crm.actualizar_precio_mercado(cliente.symbol, precio)
+                actualizados.append({"symbol": cliente.symbol, "precio": precio})
+            else:
+                fallidos.append(cliente.symbol)
+        except Exception:
+            fallidos.append(cliente.symbol)
+    return {
+        "total": len(clientes),
+        "actualizados": len(actualizados),
+        "fallidos": fallidos,
+        "detalle": actualizados
+    }
+
 # ENDPOINT NUEVO PARA CORRECCION MANUAL DE CAPITAL
 @router.post("/{symbol}/corregir-inversion", response_model=ClienteCriptoResponse)
 def corregir_inversion(symbol: str, data: CorreccionInversion, db: Session = Depends(get_db)):
@@ -2200,6 +2374,7 @@ def corregir_inversion(symbol: str, data: CorreccionInversion, db: Session = Dep
         return cliente_actualizado
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+
 ================================================================================
   FIN DE ARCHIVO: app/api/clientes.py
 ================================================================================
@@ -2836,6 +3011,68 @@ st.markdown("""
     .stDataFrame tr:hover td {
         background: rgba(255,255,255,0.02) !important;
     }
+
+    /* ===== MEJORAS DE UX ===== */
+
+    /* Tarjetas de metricas (st.metric) con mas aire y borde sutil */
+    [data-testid="stMetric"] {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 12px;
+        padding: 14px 16px;
+        transition: border-color 0.2s ease, transform 0.15s ease;
+    }
+    [data-testid="stMetric"]:hover {
+        border-color: rgba(255,215,0,0.35);
+        transform: translateY(-1px);
+    }
+    [data-testid="stMetricLabel"] {
+        color: rgba(176,196,222,0.75) !important;
+        font-size: 12.5px !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+
+    /* Botones primarios mas consistentes y con feedback al pasar el mouse */
+    .stButton > button {
+        border-radius: 10px !important;
+        border: 1px solid rgba(255,215,0,0.25) !important;
+        transition: all 0.15s ease !important;
+        font-weight: 600 !important;
+    }
+    .stButton > button:hover {
+        border-color: #ffd700 !important;
+        box-shadow: 0 0 0 1px rgba(255,215,0,0.25) !important;
+        transform: translateY(-1px);
+    }
+
+    /* Subheaders con un poco mas de espacio arriba/abajo para separar secciones */
+    h3 {
+        margin-top: 0.6em !important;
+    }
+
+    /* Expanders (usados para filtros) con estilo mas integrado */
+    [data-testid="stExpander"] {
+        border: 1px solid rgba(255,255,255,0.07) !important;
+        border-radius: 10px !important;
+        background: rgba(255,255,255,0.015) !important;
+    }
+
+    /* Inputs / selects con esquinas consistentes con el resto del tema */
+    .stSelectbox > div > div, .stMultiSelect > div > div, .stNumberInput input {
+        border-radius: 8px !important;
+    }
+
+    /* Separadores (st.divider) mas sutiles */
+    hr {
+        border-color: rgba(255,255,255,0.06) !important;
+    }
+
+    /* Alerts/success/error/info con esquinas redondeadas */
+    [data-testid="stAlert"] {
+        border-radius: 10px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -2849,6 +3086,11 @@ def fetch(endpoint):
     except:
         st.error("No se puede conectar a la API. Asegurate de que FastAPI este corriendo en puerto 8000")
         return None
+
+@st.cache_data(ttl=15)
+def fetch_clientes():
+    """Version cacheada de fetch('/clientes/'), TTL 15s para evitar llamadas repetidas."""
+    return fetch("/clientes/")
 
 def post(endpoint, data):
     try:
@@ -3351,13 +3593,10 @@ if page == "Dashboard":
 
     if st.button("🔄 Actualizar precios ahora (Binance)"):
         with st.spinner("Actualizando precios de todos los clientes..."):
-            clientes = fetch("/clientes/")
-            if clientes:
-                for c in clientes:
-                    precio_real = obtener_precio_real(c["symbol"])
-                    if precio_real > 0:
-                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
-                st.success("Precios actualizados")
+            resp = post("/clientes/actualizar-precios-lote", {})
+            if resp:
+                st.success(f"Precios actualizados: {resp.get('actualizados', 0)} de {resp.get('total', 0)}")
+                st.cache_data.clear()
                 st.rerun()
 
     data = fetch("/dashboard/resumen")
@@ -3508,8 +3747,20 @@ if page == "Dashboard":
         else:
             st.info("No hay datos de ganancias/perdidas realizadas todavia.")
 
-        st.subheader("📈 Evolucion de PnL Realizado (Ultimos 7 dias)")
-        daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
+        col_pnl_title, col_pnl_filter = st.columns([3, 1])
+        with col_pnl_title:
+            st.subheader("📈 Evolucion de PnL Realizado")
+        with col_pnl_filter:
+            rango_pnl = st.selectbox(
+                "Periodo",
+                ["7 dias", "30 dias", "90 dias", "6 meses"],
+                index=0,
+                key="rango_pnl_dashboard",
+                label_visibility="collapsed"
+            )
+        dias_map = {"7 dias": 7, "30 dias": 30, "90 dias": 90, "6 meses": 180}
+        dias_sel = dias_map[rango_pnl]
+        daily_pnl_data = fetch(f"/analytics/daily-pnl?days={dias_sel}")
         if daily_pnl_data:
             df_pnl = pd.DataFrame(daily_pnl_data)
             if not df_pnl.empty:
@@ -3521,26 +3772,66 @@ if page == "Dashboard":
                     text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
                     textposition='auto'
                 ))
-                fig.update_layout(title="PnL Realizado por Dia", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
+                fig.update_layout(title=f"PnL Realizado por Dia ({rango_pnl})", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No hay datos de PnL para los ultimos 7 dias.")
+                st.info(f"No hay datos de PnL para los ultimos {rango_pnl}.")
         else:
             st.info("No se pudieron cargar los datos de PnL diario.")
 
         col_left, col_right = st.columns(2)
         with col_left:
-            st.subheader("Distribucion del Portafolio")
+            col_dist_title, col_dist_filter = st.columns([2, 1])
+            with col_dist_title:
+                st.subheader("Distribucion del Portafolio")
+            with col_dist_filter:
+                n_dist = st.number_input("Mostrar", min_value=3, max_value=max(len(distribucion), 3), value=min(10, max(len(distribucion), 3)), step=1, key="n_dist_dashboard", label_visibility="collapsed")
             if distribucion:
-                df_dist = pd.DataFrame(distribucion)
+                df_dist = pd.DataFrame(distribucion).sort_values("porcentaje", ascending=False).head(int(n_dist))
                 fig = px.pie(df_dist, values="porcentaje", names="symbol", hole=0.4, title="Por Valor de Mercado")
                 st.plotly_chart(fig, use_container_width=True)
         with col_right:
-            st.subheader("Top Performers")
+            col_top_title, col_top_filter = st.columns([2, 1])
+            with col_top_title:
+                st.subheader("Top Performers")
+            with col_top_filter:
+                n_top = st.number_input("Mostrar", min_value=3, max_value=max(len(top), 3), value=min(10, max(len(top), 3)), step=1, key="n_top_dashboard", label_visibility="collapsed")
             if top:
-                df_top = pd.DataFrame(top)
+                df_top = pd.DataFrame(top).sort_values("roi", ascending=False).head(int(n_top))
                 fig = px.bar(df_top, x="symbol", y="roi", color="roi", color_continuous_scale="RdYlGn", title="ROI por Moneda")
                 st.plotly_chart(fig, use_container_width=True)
+
+        # ========== NUEVO: GANANDO AHORA MISMO (solo posicion abierta, no historico) ==========
+        # "Top Performers" de arriba usa roi_porcentaje, que es el ROI acumulado de
+        # SIEMPRE (incluye ganancias/perdidas ya realizadas en ventas pasadas). Este
+        # grafico en cambio solo mira la posicion abierta ahora mismo: compara el
+        # precio actual contra el costo promedio y muestra unicamente las monedas
+        # que estan en verde en este momento (ROI no realizado > 0).
+        st.subheader("🚀 Ganando Ahora Mismo (posicion abierta, no realizado)")
+        clientes_ganando = fetch_clientes()
+        ganando_ahora = []
+        for c in (clientes_ganando or []):
+            cantidad = float(c.get("cantidad_total", 0) or 0)
+            costo_prom = float(c.get("costo_promedio", 0) or 0)
+            precio_actual = float(c.get("precio_actual", 0) or 0)
+            if cantidad <= 0 or costo_prom <= 0:
+                continue
+            roi_no_realizado = (precio_actual - costo_prom) / costo_prom * 100
+            if roi_no_realizado > 0:
+                ganando_ahora.append({
+                    "symbol": c["symbol"],
+                    "roi_no_realizado": roi_no_realizado,
+                    "pnl_no_realizado": cantidad * (precio_actual - costo_prom)
+                })
+        if ganando_ahora:
+            col_gan_title, col_gan_filter = st.columns([2, 1])
+            with col_gan_filter:
+                n_gan = st.number_input("Mostrar", min_value=3, max_value=max(len(ganando_ahora), 3), value=min(10, max(len(ganando_ahora), 3)), step=1, key="n_ganando_dashboard", label_visibility="collapsed")
+            df_ganando = pd.DataFrame(ganando_ahora).sort_values("roi_no_realizado", ascending=False).head(int(n_gan))
+            fig_gan = px.bar(df_ganando, x="symbol", y="roi_no_realizado", color="roi_no_realizado", color_continuous_scale="Greens", title="ROI No Realizado Actual (solo posiciones en verde ahora mismo)")
+            st.plotly_chart(fig_gan, use_container_width=True)
+        else:
+            st.info("Ninguna posicion abierta esta en ganancia en este momento.")
 
         st.subheader("🔔 Alertas Inteligentes")
         if alertas:
@@ -3566,28 +3857,21 @@ elif page == "Clientes":
     - **Los precios se actualizan automaticamente con los datos de Binance cada hora, o manualmente con los botones de abajo.**
     """)
 
-    # ========== ACTUALIZAR TODOS ==========
+    # ========== ACTUALIZAR TODOS (UNA SOLA LLAMADA EN LOTE) ==========
     if st.button("🔄 Actualizar todos los precios desde Binance"):
         with st.spinner("Actualizando precios..."):
-            clientes_actualizar = fetch("/clientes/")
-            if clientes_actualizar:
-                for c in clientes_actualizar:
-                    precio_real = obtener_precio_real(c["symbol"])
-                    if precio_real > 0:
-                        resp = post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
-                        if not resp:
-                            st.error(f"Error actualizando {c['symbol']}")
-                    else:
-                        st.warning(f"No se pudo obtener precio para {c['symbol']}")
-                st.success("¡Precios actualizados correctamente!")
-                # Forzar recarga completa
+            resp = post("/clientes/actualizar-precios-lote", {})
+            if resp:
+                st.success(f"¡Precios actualizados! {resp.get('actualizados', 0)} de {resp.get('total', 0)} clientes.")
+                if resp.get("fallidos"):
+                    st.warning(f"No se pudo obtener precio para: {', '.join(resp['fallidos'])}")
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.error("No se pudieron obtener los clientes")
+                st.error("No se pudieron actualizar los precios")
 
     # ========== OBTENER CLIENTES ==========
-    clientes = fetch("/clientes/")
+    clientes = fetch_clientes()
     if not clientes:
         st.warning("No hay clientes registrados. Crea uno nuevo en la pestana '➕ Nuevo Cliente'")
         clientes = []
@@ -3647,8 +3931,83 @@ elif page == "Clientes":
                 "tags": c.get("tags", ""),
                 "notas": c.get("notas_personal", "")
             })
+            # PnL combinado (realizado + no realizado FIFO) para determinar color de la fila.
+            # Nota: esto es lo que suele explicar el caso de una moneda con ROI Realizado% en
+            # positivo (por ventas parciales pasadas) pero con la posicion actual en negativo:
+            # son metricas distintas (realizado vs. no realizado) que no deben sumarse a ojo.
+            df_data[-1]["ganando"] = (df_data[-1]["pnl_realizado"] + df_data[-1]["pnl_fifo_no_realizado"]) >= 0
 
         df = pd.DataFrame(df_data)
+
+        column_labels = {
+            "symbol": "Symbol",
+            "nombre": "Nombre",
+            "categoria": "Categoria",
+            "estado": "Estado",
+            "cantidad_total": "Cantidad Total",
+            "precio_prom_sin_fee": "Precio Promedio (sin fee)",
+            "costo_prom_con_fee": "Costo Promedio (con fee)",
+            "precio_actual": "Precio Actual (USD)",
+            "valor_mercado": "Valor Mercado (USD)",
+            "pnl_realizado": "PnL Realizado (USD)",
+            "roi_realizado_pct": "ROI Realizado %",
+            "pnl_fifo_no_realizado": "PnL FIFO Real (USD)",
+            "pnl_sin_fee_no_realizado": "PnL No Realizado (sin fee)",
+            "roi_fifo_pct": "ROI FIFO %",
+            "roi_sin_fee_pct": "ROI sin fee %",
+            "prioridad": "Prioridad",
+            "tags": "Tags",
+            "notas": "Notas"
+        }
+        # Columnas ocultas por defecto (se pueden re-mostrar con el filtro de abajo)
+        ocultas_por_defecto = ["estado", "roi_realizado_pct", "pnl_fifo_no_realizado", "roi_fifo_pct", "roi_sin_fee_pct", "prioridad"]
+        opciones_columnas = [c for c in column_labels if c != "symbol"]
+        default_visibles = [c for c in opciones_columnas if c not in ocultas_por_defecto]
+
+        with st.expander("🔧 Filtrar columnas visibles de la tabla", expanded=False):
+            columnas_visibles = st.multiselect(
+                "Elegi que columnas queres ver en la tabla",
+                options=opciones_columnas,
+                default=st.session_state.get("columnas_clientes_sel", default_visibles),
+                format_func=lambda c: column_labels.get(c, c),
+                key="columnas_clientes_sel"
+            )
+        columnas_mostrar = ["symbol"] + columnas_visibles
+
+        # ========== VISTA COLOREADA (verde = ganando, rojo = perdiendo) ==========
+        def resaltar_fila(row):
+            color = "background-color: rgba(46, 204, 113, 0.18)" if row["ganando"] else "background-color: rgba(231, 76, 60, 0.18)"
+            return [color] * len(row)
+
+        df_vista = df[columnas_mostrar + ["ganando"]].copy()
+        formatos = {
+            "cantidad_total": "{:.8f}", "precio_prom_sin_fee": "${:.8f}", "costo_prom_con_fee": "${:.8f}",
+            # FIX: "${:.2f}" redondeaba a "$0.00" posiciones chicas en USD tipicas
+            # de memecoins (ej. PEPE), dando la impresion de un calculo erroneo
+            # cuando el dato real (guardado con 8 decimales) estaba bien.
+            "precio_actual": "${:.8f}", "valor_mercado": "${:.6f}", "pnl_realizado": "${:.6f}",
+            "roi_realizado_pct": "{:.2f}%", "pnl_fifo_no_realizado": "${:.6f}", "pnl_sin_fee_no_realizado": "${:.6f}",
+            "roi_fifo_pct": "{:.2f}%", "roi_sin_fee_pct": "{:.2f}%", "prioridad": "{:.0f}"
+        }
+        formatos_aplicables = {k: v for k, v in formatos.items() if k in df_vista.columns}
+        styled = (
+            df_vista.style
+            .apply(resaltar_fila, axis=1)
+            .format(formatos_aplicables)
+            .hide(axis="columns", subset=["ganando"])
+        )
+        styled = styled.set_table_styles([{"selector": "th", "props": [("text-align", "left")]}])
+        # Renombrar encabezados para la vista
+        styled = styled.format_index(lambda c: column_labels.get(c, c), axis=1)
+        st.caption("🟢 Fila verde = posicion con PnL combinado positivo · 🔴 Fila roja = posicion con PnL combinado negativo")
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        # ========== EDICION DE CAMPOS (solo columnas editables seleccionadas) ==========
+        st.markdown("##### ✏️ Editar clientes")
+        campos_editables_todos = ["nombre", "categoria", "estado", "cantidad_total", "prioridad", "tags", "notas"]
+        campos_editables = [c for c in campos_editables_todos if c in columnas_mostrar]
+        columnas_editor = ["symbol"] + campos_editables
+        df_editor = df[columnas_editor].copy()
 
         column_config = {
             "symbol": st.column_config.TextColumn("Symbol", disabled=True),
@@ -3656,37 +4015,26 @@ elif page == "Clientes":
             "categoria": st.column_config.SelectboxColumn("Categoria", options=CATEGORIAS),
             "estado": st.column_config.SelectboxColumn("Estado", options=["PROSPECTO","ACTIVO_COMPRA","ACTIVO_PELIGRO","DORMANTE","CHURN","VIP"]),
             "cantidad_total": st.column_config.NumberColumn("Cantidad Total", format="%.8f"),
-            "precio_prom_sin_fee": st.column_config.NumberColumn("Precio Promedio (sin fee)", format="$%.8f", disabled=True),
-            "costo_prom_con_fee": st.column_config.NumberColumn("Costo Promedio (con fee)", format="$%.8f", disabled=True),
-            "precio_actual": st.column_config.NumberColumn("Precio Actual (USD)", format="$%.8f", disabled=True),
-            "valor_mercado": st.column_config.NumberColumn("Valor Mercado (USD)", format="$%.2f", disabled=True),
-            "pnl_realizado": st.column_config.NumberColumn("PnL Realizado (USD)", format="$%.2f", disabled=True),
-            "roi_realizado_pct": st.column_config.NumberColumn("ROI Realizado %", format="%.2f%%", disabled=True),
-            "pnl_fifo_no_realizado": st.column_config.NumberColumn("PnL FIFO Real (USD)", format="$%.2f"),
-            "pnl_sin_fee_no_realizado": st.column_config.NumberColumn("PnL No Realizado (sin fee)", format="$%.2f"),
-            "roi_fifo_pct": st.column_config.NumberColumn("ROI FIFO %", format="%.2f%%"),
-            "roi_sin_fee_pct": st.column_config.NumberColumn("ROI sin fee %", format="%.2f%%"),
             "prioridad": st.column_config.NumberColumn("Prioridad", min_value=1, max_value=5, step=1),
             "tags": st.column_config.TextColumn("Tags"),
             "notas": st.column_config.TextColumn("Notas")
         }
 
         edited_df = st.data_editor(
-            df,
-            column_config=column_config,
+            df_editor,
+            column_config={k: v for k, v in column_config.items() if k in columnas_editor},
             use_container_width=True,
             hide_index=True,
-            key="clientes_editor",
-            disabled=["symbol", "precio_prom_sin_fee", "costo_prom_con_fee", "precio_actual", "valor_mercado", "pnl_realizado", "roi_realizado_pct", "pnl_fifo_no_realizado", "pnl_sin_fee_no_realizado", "roi_fifo_pct", "roi_sin_fee_pct"]
+            key="clientes_editor"
         )
 
         if st.button("Guardar cambios realizados"):
             for idx, row in edited_df.iterrows():
-                original = df.iloc[idx]
+                original = df_editor.iloc[idx]
                 if not row.equals(original):
                     symbol = row["symbol"]
                     update_data = {}
-                    for col in ["nombre", "categoria", "estado", "cantidad_total", "prioridad", "tags", "notas"]:
+                    for col in campos_editables:
                         if row[col] != original[col]:
                             value = row[col]
                             if col == "estado" and value:
@@ -3700,6 +4048,7 @@ elif page == "Clientes":
                             st.success(f"Cliente {symbol} actualizado")
                         else:
                             st.error(f"Error actualizando {symbol}")
+            st.cache_data.clear()
             st.rerun()
 
         # ========== ELIMINAR CLIENTE ==========
@@ -3884,7 +4233,7 @@ elif page == "Interacciones":
 elif page == "Oportunidades":
     st.title("🎯 Pipeline de Oportunidades")
 
-    clientes_lista = fetch("/clientes/")
+    clientes_lista = fetch_clientes()
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
 
     with st.expander("➕ Nueva Oportunidad", expanded=True):
@@ -3973,7 +4322,7 @@ elif page == "Oportunidades":
 elif page == "Tareas":
     st.title("✅ Tareas y Alertas")
 
-    clientes_lista = fetch("/clientes/")
+    clientes_lista = fetch_clientes()
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
 
     with st.expander("➕ Nueva Tarea", expanded=True):
@@ -4066,7 +4415,7 @@ elif page == "Lotes FIFO":
     st.title("📦 Lotes de Compra (FIFO)")
     st.info("Cada compra genera un lote. Las ventas consumen lotes desde el mas antiguo (FIFO).")
 
-    symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in fetch("/clientes/") or []])
+    symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in fetch_clientes() or []])
     if symbol:
         lotes = fetch(f"/lotes/cliente/{symbol}")
         if lotes:
@@ -4482,7 +4831,7 @@ elif page == "Analisis y Trading":
     with tab_historial:
         st.subheader("Todas las compras y ventas registradas")
         with st.spinner("Cargando historial de transacciones..."):
-            clientes_list = fetch("/clientes/")
+            clientes_list = fetch_clientes()
             if clientes_list:
                 all_transactions = []
                 for cliente in clientes_list:

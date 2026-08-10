@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from decimal import Decimal
@@ -105,7 +105,12 @@ def eliminar_cliente(symbol: str, db: Session = Depends(get_db)):
     return {"message": f"Cliente {symbol} eliminado"}
 
 @router.post("/{symbol}/actualizar-precio")
-def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(get_db)):
+def actualizar_precio(symbol: str, precio: float = Body(default=None, embed=True), db: Session = Depends(get_db)):
+    # FIX: "precio" es un tipo simple (float), asi que FastAPI lo trataba como
+    # query parameter por defecto. El frontend lo manda como JSON body
+    # ({"precio": precio_real}), por lo que "precio" llegaba SIEMPRE None y el
+    # backend terminaba pidiendo un precio nuevo a Binance en vez de usar el
+    # valor recibido.
     crm = CRMService(db)
     cliente = crm.obtener_cliente(symbol)
     if not cliente:
@@ -117,6 +122,31 @@ def actualizar_precio(symbol: str, precio: float = None, db: Session = Depends(g
             raise HTTPException(status_code=400, detail=f"No se pudo obtener precio de {symbol} desde Binance")
     cliente_actualizado = crm.actualizar_precio_mercado(symbol, precio)
     return cliente_actualizado
+
+# ENDPOINT NUEVO: ACTUALIZAR TODOS LOS PRECIOS EN UNA SOLA LLAMADA (LOTE)
+@router.post("/actualizar-precios-lote")
+def actualizar_precios_lote(db: Session = Depends(get_db)):
+    crm = CRMService(db)
+    connector = ExchangeConnector()
+    clientes = crm.listar_clientes()
+    actualizados = []
+    fallidos = []
+    for cliente in clientes:
+        try:
+            precio = connector.obtener_precio(cliente.symbol)
+            if precio and precio > 0:
+                crm.actualizar_precio_mercado(cliente.symbol, precio)
+                actualizados.append({"symbol": cliente.symbol, "precio": precio})
+            else:
+                fallidos.append(cliente.symbol)
+        except Exception:
+            fallidos.append(cliente.symbol)
+    return {
+        "total": len(clientes),
+        "actualizados": len(actualizados),
+        "fallidos": fallidos,
+        "detalle": actualizados
+    }
 
 # ENDPOINT NUEVO PARA CORRECCION MANUAL DE CAPITAL
 @router.post("/{symbol}/corregir-inversion", response_model=ClienteCriptoResponse)

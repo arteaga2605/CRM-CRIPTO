@@ -1,20 +1,31 @@
-"""
-Conector de exchanges usando CCXT.
-Sincroniza portafolio real con el CRM.
-Ahora con soporte para API pública de Binance (sin keys).
-"""
 from typing import Dict, List, Optional
+import time
 import ccxt
 from decimal import Decimal
 from datetime import datetime
 from app.models import ClienteCripto, TipoInteraccion
 from app.services.crm_service import CRMService
 
+
 class ExchangeConnector:
-    def __init__(self, api_key: str = None, secret: str = None, exchange_id: str = "binance"):
-        """
-        Si no se proporcionan api_key/secret, se usa el modo público (solo lectura de mercado).
-        """
+    """
+    NOTA DE OPTIMIZACION:
+    Antes cada precio/ticker generaba una llamada de red nueva a Binance,
+    y actualizar el portafolio completo hacia una llamada POR CADA moneda,
+    una detras de otra (serial). Eso es lo que hacia lenta cada carga.
+
+    Cambios aplicados:
+    1) Cache en memoria con TTL corto (por defecto 20s) para precio/ticker
+       individuales: si la misma moneda se pide varias veces en poco tiempo
+       (por ejemplo por refrescos de Streamlit), no se vuelve a golpear la API.
+    2) Nuevo metodo obtener_precios_batch() que usa fetch_tickers() de ccxt,
+       trayendo TODOS los precios pedidos en una sola llamada HTTP, en vez de
+       una llamada por simbolo. Esto es lo que hay que usar para refrescar
+       el portafolio completo (ver main.py).
+    """
+
+    def __init__(self, api_key: str = None, secret: str = None,
+                 exchange_id: str = "binance", cache_ttl_seconds: int = 20):
         exchange_class = getattr(ccxt, exchange_id)
         config = {
             'enableRateLimit': True,
@@ -25,26 +36,81 @@ class ExchangeConnector:
             config['secret'] = secret
         self.exchange = exchange_class(config)
         self.is_authenticated = bool(api_key and secret)
+        self.cache_ttl_seconds = cache_ttl_seconds
+        self._precio_cache: Dict[str, tuple] = {}   # symbol -> (precio, timestamp)
+        self._ticker_cache: Dict[str, tuple] = {}    # symbol -> (ticker_dict, timestamp)
+
+    def _cache_vigente(self, cache: dict, key: str) -> Optional[any]:
+        entry = cache.get(key)
+        if not entry:
+            return None
+        valor, ts = entry
+        if time.time() - ts < self.cache_ttl_seconds:
+            return valor
+        return None
 
     def obtener_precio(self, symbol: str, vs_currency: str = "USDT") -> float:
-        """
-        Obtiene precio actual de una moneda en la moneda de cotización (ej: BTC/USDT).
-        Modo público, sin necesidad de API key.
-        """
+        cache_key = f"{symbol}/{vs_currency}"
+        cacheado = self._cache_vigente(self._precio_cache, cache_key)
+        if cacheado is not None:
+            return cacheado
         try:
-            ticker = self.exchange.fetch_ticker(f"{symbol}/{vs_currency}")
-            return ticker['last'] or ticker['close'] or 0.0
+            ticker = self.exchange.fetch_ticker(cache_key)
+            precio = ticker['last'] or ticker['close'] or 0.0
+            self._precio_cache[cache_key] = (precio, time.time())
+            return precio
         except Exception as e:
             print(f"Error obteniendo precio de {symbol}: {e}")
             return 0.0
 
+    def obtener_precios_batch(self, symbols: List[str], vs_currency: str = "USDT") -> Dict[str, float]:
+        """
+        Trae el precio de VARIOS simbolos en UNA sola llamada de red.
+        Usar esto en vez de llamar obtener_precio() en un loop.
+        """
+        if not symbols:
+            return {}
+
+        pares = [f"{s}/{vs_currency}" for s in symbols]
+        resultado: Dict[str, float] = {}
+        pares_a_pedir = []
+
+        # Reusar cache vigente donde exista
+        for symbol, par in zip(symbols, pares):
+            cacheado = self._cache_vigente(self._precio_cache, par)
+            if cacheado is not None:
+                resultado[symbol] = cacheado
+            else:
+                pares_a_pedir.append(par)
+
+        if pares_a_pedir:
+            try:
+                tickers = self.exchange.fetch_tickers(pares_a_pedir)
+                ahora = time.time()
+                for par, ticker in tickers.items():
+                    symbol = par.split("/")[0]
+                    precio = ticker.get('last') or ticker.get('close') or 0.0
+                    self._precio_cache[par] = (precio, ahora)
+                    resultado[symbol] = precio
+            except Exception as e:
+                print(f"Error obteniendo precios en lote: {e}")
+                # Fallback: si el exchange no soporta fetch_tickers con lista,
+                # se completa uno por uno solo para lo que falto.
+                for par in pares_a_pedir:
+                    symbol = par.split("/")[0]
+                    if symbol not in resultado:
+                        resultado[symbol] = self.obtener_precio(symbol, vs_currency)
+
+        return resultado
+
     def obtener_ticker(self, symbol: str, vs_currency: str = "USDT") -> Dict:
-        """
-        Devuelve información completa del ticker (precio, cambio 24h, volumen, etc.)
-        """
+        cache_key = f"{symbol}/{vs_currency}"
+        cacheado = self._cache_vigente(self._ticker_cache, cache_key)
+        if cacheado is not None:
+            return cacheado
         try:
-            ticker = self.exchange.fetch_ticker(f"{symbol}/{vs_currency}")
-            return {
+            ticker = self.exchange.fetch_ticker(cache_key)
+            data = {
                 "symbol": symbol,
                 "last": ticker.get('last', 0),
                 "bid": ticker.get('bid', 0),
@@ -57,15 +123,13 @@ class ExchangeConnector:
                 "low": ticker.get('low', 0),
                 "timestamp": datetime.utcnow().isoformat()
             }
+            self._ticker_cache[cache_key] = (data, time.time())
+            return data
         except Exception as e:
             print(f"Error obteniendo ticker de {symbol}: {e}")
             return {}
 
     def obtener_velas(self, symbol: str, timeframe: str = "1h", limit: int = 100, vs_currency: str = "USDT") -> List[Dict]:
-        """
-        Obtiene velas (OHLCV) históricas.
-        timeframe: '1m', '5m', '15m', '30m', '1h', '4h', '1d', etc.
-        """
         try:
             ohlcv = self.exchange.fetch_ohlcv(f"{symbol}/{vs_currency}", timeframe=timeframe, limit=limit)
             velas = []
@@ -85,18 +149,16 @@ class ExchangeConnector:
             return []
 
     def obtener_balance(self) -> Dict[str, float]:
-        """Obtiene balance actual del exchange (solo si está autenticado)."""
         if not self.is_authenticated:
             raise ValueError("Se requiere API key y secret para obtener balance.")
         balance = self.exchange.fetch_balance()
         return {
-            k: float(v['total']) 
-            for k, v in balance.items() 
+            k: float(v['total'])
+            for k, v in balance.items()
             if isinstance(v, dict) and float(v.get('total', 0)) > 0
         }
 
     def obtener_historial_trades(self, symbol: str, limit: int = 100) -> List[dict]:
-        """Obtiene historial de trades del exchange (solo autenticado)."""
         if not self.is_authenticated:
             raise ValueError("Se requiere API key y secret para obtener historial de trades.")
         try:
@@ -107,21 +169,18 @@ class ExchangeConnector:
             return []
 
     def sincronizar_portafolio(self, crm: CRMService):
-        """
-        Sincroniza portafolio real con el CRM (requiere autenticación).
-        Registra monedas nuevas y actualiza precios.
-        """
         if not self.is_authenticated:
             print("No autenticado. No se puede sincronizar portafolio.")
             return False
-
         balance = self.obtener_balance()
-        for symbol, cantidad in balance.items():
-            if symbol in ['USDT', 'USDC', 'BUSD', 'FDUSD']:
-                continue
-            if cantidad <= 0:
-                continue
-            precio = self.obtener_precio(symbol)
+
+        simbolos = [s for s in balance.keys()
+                    if s not in ['USDT', 'USDC', 'BUSD', 'FDUSD'] and balance[s] > 0]
+        precios = self.obtener_precios_batch(simbolos)
+
+        for symbol in simbolos:
+            cantidad = balance[symbol]
+            precio = precios.get(symbol, 0.0)
             if precio == 0:
                 continue
             cliente = crm.obtener_cliente(symbol)
@@ -146,7 +205,6 @@ class ExchangeConnector:
         return True
 
     def importar_historial(self, crm: CRMService, symbol: str):
-        """Importa trades historicos del exchange como interacciones (requiere autenticación)."""
         if not self.is_authenticated:
             raise ValueError("Se requiere autenticación para importar historial.")
         trades = self.obtener_historial_trades(symbol)

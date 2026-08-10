@@ -322,6 +322,68 @@ st.markdown("""
     .stDataFrame tr:hover td {
         background: rgba(255,255,255,0.02) !important;
     }
+
+    /* ===== MEJORAS DE UX ===== */
+
+    /* Tarjetas de metricas (st.metric) con mas aire y borde sutil */
+    [data-testid="stMetric"] {
+        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255,255,255,0.06);
+        border-radius: 12px;
+        padding: 14px 16px;
+        transition: border-color 0.2s ease, transform 0.15s ease;
+    }
+    [data-testid="stMetric"]:hover {
+        border-color: rgba(255,215,0,0.35);
+        transform: translateY(-1px);
+    }
+    [data-testid="stMetricLabel"] {
+        color: rgba(176,196,222,0.75) !important;
+        font-size: 12.5px !important;
+        font-weight: 600 !important;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+    }
+
+    /* Botones primarios mas consistentes y con feedback al pasar el mouse */
+    .stButton > button {
+        border-radius: 10px !important;
+        border: 1px solid rgba(255,215,0,0.25) !important;
+        transition: all 0.15s ease !important;
+        font-weight: 600 !important;
+    }
+    .stButton > button:hover {
+        border-color: #ffd700 !important;
+        box-shadow: 0 0 0 1px rgba(255,215,0,0.25) !important;
+        transform: translateY(-1px);
+    }
+
+    /* Subheaders con un poco mas de espacio arriba/abajo para separar secciones */
+    h3 {
+        margin-top: 0.6em !important;
+    }
+
+    /* Expanders (usados para filtros) con estilo mas integrado */
+    [data-testid="stExpander"] {
+        border: 1px solid rgba(255,255,255,0.07) !important;
+        border-radius: 10px !important;
+        background: rgba(255,255,255,0.015) !important;
+    }
+
+    /* Inputs / selects con esquinas consistentes con el resto del tema */
+    .stSelectbox > div > div, .stMultiSelect > div > div, .stNumberInput input {
+        border-radius: 8px !important;
+    }
+
+    /* Separadores (st.divider) mas sutiles */
+    hr {
+        border-color: rgba(255,255,255,0.06) !important;
+    }
+
+    /* Alerts/success/error/info con esquinas redondeadas */
+    [data-testid="stAlert"] {
+        border-radius: 10px !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -335,6 +397,11 @@ def fetch(endpoint):
     except:
         st.error("No se puede conectar a la API. Asegurate de que FastAPI este corriendo en puerto 8000")
         return None
+
+@st.cache_data(ttl=15)
+def fetch_clientes():
+    """Version cacheada de fetch('/clientes/'), TTL 15s para evitar llamadas repetidas."""
+    return fetch("/clientes/")
 
 def post(endpoint, data):
     try:
@@ -837,13 +904,10 @@ if page == "Dashboard":
 
     if st.button("🔄 Actualizar precios ahora (Binance)"):
         with st.spinner("Actualizando precios de todos los clientes..."):
-            clientes = fetch("/clientes/")
-            if clientes:
-                for c in clientes:
-                    precio_real = obtener_precio_real(c["symbol"])
-                    if precio_real > 0:
-                        post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
-                st.success("Precios actualizados")
+            resp = post("/clientes/actualizar-precios-lote", {})
+            if resp:
+                st.success(f"Precios actualizados: {resp.get('actualizados', 0)} de {resp.get('total', 0)}")
+                st.cache_data.clear()
                 st.rerun()
 
     data = fetch("/dashboard/resumen")
@@ -994,8 +1058,20 @@ if page == "Dashboard":
         else:
             st.info("No hay datos de ganancias/perdidas realizadas todavia.")
 
-        st.subheader("📈 Evolucion de PnL Realizado (Ultimos 7 dias)")
-        daily_pnl_data = fetch("/analytics/daily-pnl?days=7")
+        col_pnl_title, col_pnl_filter = st.columns([3, 1])
+        with col_pnl_title:
+            st.subheader("📈 Evolucion de PnL Realizado")
+        with col_pnl_filter:
+            rango_pnl = st.selectbox(
+                "Periodo",
+                ["7 dias", "30 dias", "90 dias", "6 meses"],
+                index=0,
+                key="rango_pnl_dashboard",
+                label_visibility="collapsed"
+            )
+        dias_map = {"7 dias": 7, "30 dias": 30, "90 dias": 90, "6 meses": 180}
+        dias_sel = dias_map[rango_pnl]
+        daily_pnl_data = fetch(f"/analytics/daily-pnl?days={dias_sel}")
         if daily_pnl_data:
             df_pnl = pd.DataFrame(daily_pnl_data)
             if not df_pnl.empty:
@@ -1007,26 +1083,66 @@ if page == "Dashboard":
                     text=df_pnl["pnl"].apply(lambda x: f"${x:.2f}"),
                     textposition='auto'
                 ))
-                fig.update_layout(title="PnL Realizado por Dia", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
+                fig.update_layout(title=f"PnL Realizado por Dia ({rango_pnl})", xaxis_title="Fecha", yaxis_title="PnL (USD)", height=400)
                 st.plotly_chart(fig, use_container_width=True)
             else:
-                st.info("No hay datos de PnL para los ultimos 7 dias.")
+                st.info(f"No hay datos de PnL para los ultimos {rango_pnl}.")
         else:
             st.info("No se pudieron cargar los datos de PnL diario.")
 
         col_left, col_right = st.columns(2)
         with col_left:
-            st.subheader("Distribucion del Portafolio")
+            col_dist_title, col_dist_filter = st.columns([2, 1])
+            with col_dist_title:
+                st.subheader("Distribucion del Portafolio")
+            with col_dist_filter:
+                n_dist = st.number_input("Mostrar", min_value=3, max_value=max(len(distribucion), 3), value=min(10, max(len(distribucion), 3)), step=1, key="n_dist_dashboard", label_visibility="collapsed")
             if distribucion:
-                df_dist = pd.DataFrame(distribucion)
+                df_dist = pd.DataFrame(distribucion).sort_values("porcentaje", ascending=False).head(int(n_dist))
                 fig = px.pie(df_dist, values="porcentaje", names="symbol", hole=0.4, title="Por Valor de Mercado")
                 st.plotly_chart(fig, use_container_width=True)
         with col_right:
-            st.subheader("Top Performers")
+            col_top_title, col_top_filter = st.columns([2, 1])
+            with col_top_title:
+                st.subheader("Top Performers")
+            with col_top_filter:
+                n_top = st.number_input("Mostrar", min_value=3, max_value=max(len(top), 3), value=min(10, max(len(top), 3)), step=1, key="n_top_dashboard", label_visibility="collapsed")
             if top:
-                df_top = pd.DataFrame(top)
+                df_top = pd.DataFrame(top).sort_values("roi", ascending=False).head(int(n_top))
                 fig = px.bar(df_top, x="symbol", y="roi", color="roi", color_continuous_scale="RdYlGn", title="ROI por Moneda")
                 st.plotly_chart(fig, use_container_width=True)
+
+        # ========== NUEVO: GANANDO AHORA MISMO (solo posicion abierta, no historico) ==========
+        # "Top Performers" de arriba usa roi_porcentaje, que es el ROI acumulado de
+        # SIEMPRE (incluye ganancias/perdidas ya realizadas en ventas pasadas). Este
+        # grafico en cambio solo mira la posicion abierta ahora mismo: compara el
+        # precio actual contra el costo promedio y muestra unicamente las monedas
+        # que estan en verde en este momento (ROI no realizado > 0).
+        st.subheader("🚀 Ganando Ahora Mismo (posicion abierta, no realizado)")
+        clientes_ganando = fetch_clientes()
+        ganando_ahora = []
+        for c in (clientes_ganando or []):
+            cantidad = float(c.get("cantidad_total", 0) or 0)
+            costo_prom = float(c.get("costo_promedio", 0) or 0)
+            precio_actual = float(c.get("precio_actual", 0) or 0)
+            if cantidad <= 0 or costo_prom <= 0:
+                continue
+            roi_no_realizado = (precio_actual - costo_prom) / costo_prom * 100
+            if roi_no_realizado > 0:
+                ganando_ahora.append({
+                    "symbol": c["symbol"],
+                    "roi_no_realizado": roi_no_realizado,
+                    "pnl_no_realizado": cantidad * (precio_actual - costo_prom)
+                })
+        if ganando_ahora:
+            col_gan_title, col_gan_filter = st.columns([2, 1])
+            with col_gan_filter:
+                n_gan = st.number_input("Mostrar", min_value=3, max_value=max(len(ganando_ahora), 3), value=min(10, max(len(ganando_ahora), 3)), step=1, key="n_ganando_dashboard", label_visibility="collapsed")
+            df_ganando = pd.DataFrame(ganando_ahora).sort_values("roi_no_realizado", ascending=False).head(int(n_gan))
+            fig_gan = px.bar(df_ganando, x="symbol", y="roi_no_realizado", color="roi_no_realizado", color_continuous_scale="Greens", title="ROI No Realizado Actual (solo posiciones en verde ahora mismo)")
+            st.plotly_chart(fig_gan, use_container_width=True)
+        else:
+            st.info("Ninguna posicion abierta esta en ganancia en este momento.")
 
         st.subheader("🔔 Alertas Inteligentes")
         if alertas:
@@ -1052,28 +1168,21 @@ elif page == "Clientes":
     - **Los precios se actualizan automaticamente con los datos de Binance cada hora, o manualmente con los botones de abajo.**
     """)
 
-    # ========== ACTUALIZAR TODOS ==========
+    # ========== ACTUALIZAR TODOS (UNA SOLA LLAMADA EN LOTE) ==========
     if st.button("🔄 Actualizar todos los precios desde Binance"):
         with st.spinner("Actualizando precios..."):
-            clientes_actualizar = fetch("/clientes/")
-            if clientes_actualizar:
-                for c in clientes_actualizar:
-                    precio_real = obtener_precio_real(c["symbol"])
-                    if precio_real > 0:
-                        resp = post(f"/clientes/{c['symbol']}/actualizar-precio", {"precio": precio_real})
-                        if not resp:
-                            st.error(f"Error actualizando {c['symbol']}")
-                    else:
-                        st.warning(f"No se pudo obtener precio para {c['symbol']}")
-                st.success("¡Precios actualizados correctamente!")
-                # Forzar recarga completa
+            resp = post("/clientes/actualizar-precios-lote", {})
+            if resp:
+                st.success(f"¡Precios actualizados! {resp.get('actualizados', 0)} de {resp.get('total', 0)} clientes.")
+                if resp.get("fallidos"):
+                    st.warning(f"No se pudo obtener precio para: {', '.join(resp['fallidos'])}")
                 st.cache_data.clear()
                 st.rerun()
             else:
-                st.error("No se pudieron obtener los clientes")
+                st.error("No se pudieron actualizar los precios")
 
     # ========== OBTENER CLIENTES ==========
-    clientes = fetch("/clientes/")
+    clientes = fetch_clientes()
     if not clientes:
         st.warning("No hay clientes registrados. Crea uno nuevo en la pestana '➕ Nuevo Cliente'")
         clientes = []
@@ -1133,8 +1242,83 @@ elif page == "Clientes":
                 "tags": c.get("tags", ""),
                 "notas": c.get("notas_personal", "")
             })
+            # PnL combinado (realizado + no realizado FIFO) para determinar color de la fila.
+            # Nota: esto es lo que suele explicar el caso de una moneda con ROI Realizado% en
+            # positivo (por ventas parciales pasadas) pero con la posicion actual en negativo:
+            # son metricas distintas (realizado vs. no realizado) que no deben sumarse a ojo.
+            df_data[-1]["ganando"] = (df_data[-1]["pnl_realizado"] + df_data[-1]["pnl_fifo_no_realizado"]) >= 0
 
         df = pd.DataFrame(df_data)
+
+        column_labels = {
+            "symbol": "Symbol",
+            "nombre": "Nombre",
+            "categoria": "Categoria",
+            "estado": "Estado",
+            "cantidad_total": "Cantidad Total",
+            "precio_prom_sin_fee": "Precio Promedio (sin fee)",
+            "costo_prom_con_fee": "Costo Promedio (con fee)",
+            "precio_actual": "Precio Actual (USD)",
+            "valor_mercado": "Valor Mercado (USD)",
+            "pnl_realizado": "PnL Realizado (USD)",
+            "roi_realizado_pct": "ROI Realizado %",
+            "pnl_fifo_no_realizado": "PnL FIFO Real (USD)",
+            "pnl_sin_fee_no_realizado": "PnL No Realizado (sin fee)",
+            "roi_fifo_pct": "ROI FIFO %",
+            "roi_sin_fee_pct": "ROI sin fee %",
+            "prioridad": "Prioridad",
+            "tags": "Tags",
+            "notas": "Notas"
+        }
+        # Columnas ocultas por defecto (se pueden re-mostrar con el filtro de abajo)
+        ocultas_por_defecto = ["estado", "roi_realizado_pct", "pnl_fifo_no_realizado", "roi_fifo_pct", "roi_sin_fee_pct", "prioridad"]
+        opciones_columnas = [c for c in column_labels if c != "symbol"]
+        default_visibles = [c for c in opciones_columnas if c not in ocultas_por_defecto]
+
+        with st.expander("🔧 Filtrar columnas visibles de la tabla", expanded=False):
+            columnas_visibles = st.multiselect(
+                "Elegi que columnas queres ver en la tabla",
+                options=opciones_columnas,
+                default=st.session_state.get("columnas_clientes_sel", default_visibles),
+                format_func=lambda c: column_labels.get(c, c),
+                key="columnas_clientes_sel"
+            )
+        columnas_mostrar = ["symbol"] + columnas_visibles
+
+        # ========== VISTA COLOREADA (verde = ganando, rojo = perdiendo) ==========
+        def resaltar_fila(row):
+            color = "background-color: rgba(46, 204, 113, 0.18)" if row["ganando"] else "background-color: rgba(231, 76, 60, 0.18)"
+            return [color] * len(row)
+
+        df_vista = df[columnas_mostrar + ["ganando"]].copy()
+        formatos = {
+            "cantidad_total": "{:.8f}", "precio_prom_sin_fee": "${:.8f}", "costo_prom_con_fee": "${:.8f}",
+            # FIX: "${:.2f}" redondeaba a "$0.00" posiciones chicas en USD tipicas
+            # de memecoins (ej. PEPE), dando la impresion de un calculo erroneo
+            # cuando el dato real (guardado con 8 decimales) estaba bien.
+            "precio_actual": "${:.8f}", "valor_mercado": "${:.6f}", "pnl_realizado": "${:.6f}",
+            "roi_realizado_pct": "{:.2f}%", "pnl_fifo_no_realizado": "${:.6f}", "pnl_sin_fee_no_realizado": "${:.6f}",
+            "roi_fifo_pct": "{:.2f}%", "roi_sin_fee_pct": "{:.2f}%", "prioridad": "{:.0f}"
+        }
+        formatos_aplicables = {k: v for k, v in formatos.items() if k in df_vista.columns}
+        styled = (
+            df_vista.style
+            .apply(resaltar_fila, axis=1)
+            .format(formatos_aplicables)
+            .hide(axis="columns", subset=["ganando"])
+        )
+        styled = styled.set_table_styles([{"selector": "th", "props": [("text-align", "left")]}])
+        # Renombrar encabezados para la vista
+        styled = styled.format_index(lambda c: column_labels.get(c, c), axis=1)
+        st.caption("🟢 Fila verde = posicion con PnL combinado positivo · 🔴 Fila roja = posicion con PnL combinado negativo")
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+
+        # ========== EDICION DE CAMPOS (solo columnas editables seleccionadas) ==========
+        st.markdown("##### ✏️ Editar clientes")
+        campos_editables_todos = ["nombre", "categoria", "estado", "cantidad_total", "prioridad", "tags", "notas"]
+        campos_editables = [c for c in campos_editables_todos if c in columnas_mostrar]
+        columnas_editor = ["symbol"] + campos_editables
+        df_editor = df[columnas_editor].copy()
 
         column_config = {
             "symbol": st.column_config.TextColumn("Symbol", disabled=True),
@@ -1142,37 +1326,26 @@ elif page == "Clientes":
             "categoria": st.column_config.SelectboxColumn("Categoria", options=CATEGORIAS),
             "estado": st.column_config.SelectboxColumn("Estado", options=["PROSPECTO","ACTIVO_COMPRA","ACTIVO_PELIGRO","DORMANTE","CHURN","VIP"]),
             "cantidad_total": st.column_config.NumberColumn("Cantidad Total", format="%.8f"),
-            "precio_prom_sin_fee": st.column_config.NumberColumn("Precio Promedio (sin fee)", format="$%.8f", disabled=True),
-            "costo_prom_con_fee": st.column_config.NumberColumn("Costo Promedio (con fee)", format="$%.8f", disabled=True),
-            "precio_actual": st.column_config.NumberColumn("Precio Actual (USD)", format="$%.8f", disabled=True),
-            "valor_mercado": st.column_config.NumberColumn("Valor Mercado (USD)", format="$%.2f", disabled=True),
-            "pnl_realizado": st.column_config.NumberColumn("PnL Realizado (USD)", format="$%.2f", disabled=True),
-            "roi_realizado_pct": st.column_config.NumberColumn("ROI Realizado %", format="%.2f%%", disabled=True),
-            "pnl_fifo_no_realizado": st.column_config.NumberColumn("PnL FIFO Real (USD)", format="$%.2f"),
-            "pnl_sin_fee_no_realizado": st.column_config.NumberColumn("PnL No Realizado (sin fee)", format="$%.2f"),
-            "roi_fifo_pct": st.column_config.NumberColumn("ROI FIFO %", format="%.2f%%"),
-            "roi_sin_fee_pct": st.column_config.NumberColumn("ROI sin fee %", format="%.2f%%"),
             "prioridad": st.column_config.NumberColumn("Prioridad", min_value=1, max_value=5, step=1),
             "tags": st.column_config.TextColumn("Tags"),
             "notas": st.column_config.TextColumn("Notas")
         }
 
         edited_df = st.data_editor(
-            df,
-            column_config=column_config,
+            df_editor,
+            column_config={k: v for k, v in column_config.items() if k in columnas_editor},
             use_container_width=True,
             hide_index=True,
-            key="clientes_editor",
-            disabled=["symbol", "precio_prom_sin_fee", "costo_prom_con_fee", "precio_actual", "valor_mercado", "pnl_realizado", "roi_realizado_pct", "pnl_fifo_no_realizado", "pnl_sin_fee_no_realizado", "roi_fifo_pct", "roi_sin_fee_pct"]
+            key="clientes_editor"
         )
 
         if st.button("Guardar cambios realizados"):
             for idx, row in edited_df.iterrows():
-                original = df.iloc[idx]
+                original = df_editor.iloc[idx]
                 if not row.equals(original):
                     symbol = row["symbol"]
                     update_data = {}
-                    for col in ["nombre", "categoria", "estado", "cantidad_total", "prioridad", "tags", "notas"]:
+                    for col in campos_editables:
                         if row[col] != original[col]:
                             value = row[col]
                             if col == "estado" and value:
@@ -1186,6 +1359,7 @@ elif page == "Clientes":
                             st.success(f"Cliente {symbol} actualizado")
                         else:
                             st.error(f"Error actualizando {symbol}")
+            st.cache_data.clear()
             st.rerun()
 
         # ========== ELIMINAR CLIENTE ==========
@@ -1370,7 +1544,7 @@ elif page == "Interacciones":
 elif page == "Oportunidades":
     st.title("🎯 Pipeline de Oportunidades")
 
-    clientes_lista = fetch("/clientes/")
+    clientes_lista = fetch_clientes()
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
 
     with st.expander("➕ Nueva Oportunidad", expanded=True):
@@ -1459,7 +1633,7 @@ elif page == "Oportunidades":
 elif page == "Tareas":
     st.title("✅ Tareas y Alertas")
 
-    clientes_lista = fetch("/clientes/")
+    clientes_lista = fetch_clientes()
     simbolos_clientes = [c["symbol"] for c in clientes_lista] if clientes_lista else []
 
     with st.expander("➕ Nueva Tarea", expanded=True):
@@ -1552,7 +1726,7 @@ elif page == "Lotes FIFO":
     st.title("📦 Lotes de Compra (FIFO)")
     st.info("Cada compra genera un lote. Las ventas consumen lotes desde el mas antiguo (FIFO).")
 
-    symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in fetch("/clientes/") or []])
+    symbol = st.selectbox("Selecciona un cliente", [c["symbol"] for c in fetch_clientes() or []])
     if symbol:
         lotes = fetch(f"/lotes/cliente/{symbol}")
         if lotes:
@@ -1968,7 +2142,7 @@ elif page == "Analisis y Trading":
     with tab_historial:
         st.subheader("Todas las compras y ventas registradas")
         with st.spinner("Cargando historial de transacciones..."):
-            clientes_list = fetch("/clientes/")
+            clientes_list = fetch_clientes()
             if clientes_list:
                 all_transactions = []
                 for cliente in clientes_list:

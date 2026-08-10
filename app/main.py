@@ -54,9 +54,13 @@ def actualizar_precios_automatico():
         crm = CRMService(db)
         connector = ExchangeConnector()
         clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
+        # Antes esto hacia una llamada de red POR CADA cliente, una detras de otra.
+        # Ahora se piden todos los precios en una sola llamada en lote.
+        simbolos = [c.symbol for c in clientes]
+        precios = connector.obtener_precios_batch(simbolos)
         actualizados = 0
         for cliente in clientes:
-            precio = connector.obtener_precio(cliente.symbol)
+            precio = precios.get(cliente.symbol, 0.0)
             if precio > 0:
                 crm.actualizar_precio_mercado(cliente.symbol, precio)
                 actualizados += 1
@@ -129,8 +133,6 @@ def root():
             "notifications": "/notifications",
             "notifications/read": "/notifications/read (POST)",
             "p2p": "/p2p/best-prices",
-            "deportes": "/deportes",
-            "deportes/retiros": "/deportes/retiros",
             "export-db": "/export-db (GET)"
         }
     }
@@ -140,6 +142,29 @@ def obtener_precio_real(symbol: str, vs: str = "USDT"):
     connector = ExchangeConnector()
     precio = connector.obtener_precio(symbol.upper(), vs)
     return {"symbol": symbol.upper(), "price": precio, "vs_currency": vs}
+
+@app.post("/clientes/actualizar-precios-lote")
+def actualizar_precios_lote(vs: str = "USDT", db: Session = Depends(get_db)):
+    """
+    Actualiza el precio de mercado de TODOS los clientes con posicion abierta
+    en una sola llamada en lote a Binance, en vez de una llamada por moneda.
+    Usar este endpoint desde el boton "Actualizar todos los precios" del
+    dashboard en lugar de hacer un fetch + post por cada simbolo.
+    """
+    crm = CRMService(db)
+    connector = ExchangeConnector()
+    clientes = db.query(ClienteCripto).filter(ClienteCripto.cantidad_total > 0).all()
+    simbolos = [c.symbol for c in clientes]
+    precios = connector.obtener_precios_batch(simbolos, vs)
+    actualizados, fallidos = [], []
+    for cliente in clientes:
+        precio = precios.get(cliente.symbol, 0.0)
+        if precio > 0:
+            crm.actualizar_precio_mercado(cliente.symbol, precio)
+            actualizados.append(cliente.symbol)
+        else:
+            fallidos.append(cliente.symbol)
+    return {"actualizados": actualizados, "fallidos": fallidos}
 
 @app.get("/ticker/{symbol}")
 def obtener_ticker_real(symbol: str, vs: str = "USDT"):

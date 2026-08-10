@@ -20,3 +20,5 @@ streamlit run dashboard/streamlit_app.py
 
 BD 
 crypto_crm.db
+
+Puerto 8501 o 8000

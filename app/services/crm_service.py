@@ -97,11 +97,22 @@ class CRMService:
 
         if cantidad > 0:
             cliente.valor_mercado = precio_dec * cantidad
-            costo_promedio = cliente.costo_promedio if cliente.costo_promedio else Decimal("0")
-            costo_total = cantidad * costo_promedio
-            if costo_total > 0:
-                cliente.pnl_total = cliente.valor_mercado - costo_total
-                cliente.roi_porcentaje = (cliente.pnl_total / costo_total) * Decimal("100")
+            # Se usa inversion_total como fuente unica de verdad del capital invertido
+            # (antes se recalculaba con costo_promedio*cantidad, lo que podia divergir
+            # por redondeos y a veces dejaba costo_total en 0, congelando el PnL).
+            inversion_total = cliente.inversion_total if cliente.inversion_total else Decimal("0")
+            pnl_realizado = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
+            pnl_no_realizado = cliente.valor_mercado - inversion_total
+            # PnL total = lo ya realizado en ventas + lo no realizado de la posicion actual.
+            # Antes esta linea sobreescribia pnl_total solo con pnl_no_realizado, borrando
+            # las ganancias/perdidas ya realizadas en ventas anteriores.
+            cliente.pnl_total = pnl_no_realizado + pnl_realizado
+            if inversion_total > 0:
+                cliente.roi_porcentaje = (cliente.pnl_total / inversion_total) * Decimal("100")
+        else:
+            # Sin posicion abierta: el PnL total es solo lo realizado historicamente
+            cliente.valor_mercado = Decimal("0")
+            cliente.pnl_total = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
@@ -118,12 +129,14 @@ class CRMService:
         precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
         cantidad = cliente.cantidad_total if cliente.cantidad_total else Decimal("0")
         cliente.valor_mercado = precio_actual * cantidad
-        
+        pnl_realizado = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
+
         if cliente.inversion_total > 0:
-            cliente.pnl_total = cliente.valor_mercado - cliente.inversion_total
+            pnl_no_realizado = cliente.valor_mercado - cliente.inversion_total
+            cliente.pnl_total = pnl_no_realizado + pnl_realizado
             cliente.roi_porcentaje = (cliente.pnl_total / cliente.inversion_total) * Decimal("100")
         else:
-            cliente.pnl_total = cliente.valor_mercado
+            cliente.pnl_total = cliente.valor_mercado + pnl_realizado
             cliente.roi_porcentaje = Decimal("0")
             
         self.db.commit()
@@ -255,7 +268,7 @@ class CRMService:
 
         nueva_cantidad = cant_total_cliente - cantidad_vendida
         cliente.cantidad_total = nueva_cantidad
-        cliente.pnl_total = (cliente.pnl_total if cliente.pnl_total else Decimal("0")) + pnl_total
+        cliente.pnl_realizado_acumulado = (cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")) + pnl_total
 
         # CORRECCIÓN CONTABLE: Al vender, se descarga el capital base de los lotes restantes
         if nueva_cantidad > 0:
@@ -269,6 +282,13 @@ class CRMService:
         else:
             cliente.costo_promedio = Decimal("0")
             cliente.inversion_total = Decimal("0")
+
+        precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
+        cliente.valor_mercado = precio_actual * nueva_cantidad
+        pnl_no_realizado = cliente.valor_mercado - cliente.inversion_total
+        cliente.pnl_total = pnl_no_realizado + cliente.pnl_realizado_acumulado
+        if cliente.inversion_total > 0:
+            cliente.roi_porcentaje = (cliente.pnl_total / cliente.inversion_total) * Decimal("100")
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)
@@ -342,6 +362,7 @@ class CRMService:
         cliente.costo_promedio = Decimal("0")
         cliente.inversion_total = Decimal("0")
         cliente.pnl_total = Decimal("0")
+        cliente.pnl_realizado_acumulado = Decimal("0")
         cliente.valor_mercado = Decimal("0")
         cliente.roi_porcentaje = Decimal("0")
         self.db.commit()
@@ -403,7 +424,7 @@ class CRMService:
 
                 nueva_cantidad = cliente.cantidad_total - cantidad_vendida
                 cliente.cantidad_total = nueva_cantidad
-                cliente.pnl_total += pnl_total
+                cliente.pnl_realizado_acumulado += pnl_total
 
                 # CORRECCIÓN CONTABLE
                 if nueva_cantidad > 0:
@@ -424,13 +445,19 @@ class CRMService:
                 if tipo in ["staking", "airdrop", "dividendo"]:
                     cliente.cantidad_total += cantidad
 
+        pnl_realizado = cliente.pnl_realizado_acumulado if cliente.pnl_realizado_acumulado else Decimal("0")
         if cliente.cantidad_total > 0:
             precio_actual = cliente.precio_actual if cliente.precio_actual else Decimal("0")
             cliente.valor_mercado = precio_actual * cliente.cantidad_total
             inversion_total = cliente.inversion_total
+            pnl_no_realizado = cliente.valor_mercado - inversion_total
+            cliente.pnl_total = pnl_no_realizado + pnl_realizado
             if inversion_total > 0:
-                cliente.pnl_total = cliente.valor_mercado - inversion_total
                 cliente.roi_porcentaje = (cliente.pnl_total / inversion_total) * Decimal("100")
+        else:
+            # Ya no queda posicion abierta: el PnL total es solo lo realizado historicamente
+            cliente.valor_mercado = Decimal("0")
+            cliente.pnl_total = pnl_realizado
 
         self.db.commit()
         self.actualizar_estado_cliente(symbol)

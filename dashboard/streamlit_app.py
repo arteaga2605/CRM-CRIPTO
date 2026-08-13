@@ -14,6 +14,8 @@ from streamlit_autorefresh import st_autorefresh
 import time
 from scipy.stats import pearsonr
 import numpy as np
+import json
+import os
 from deportes import mostrar_pagina_deportes
 
 API_URL = "http://localhost:8000"
@@ -448,6 +450,7 @@ def obtener_precio_real(symbol):
         pass
     return 0
 
+@st.cache_data(ttl=10)
 def obtener_ticker_real(symbol):
     try:
         r = requests.get(f"{API_URL}/ticker/{symbol}")
@@ -457,6 +460,7 @@ def obtener_ticker_real(symbol):
         pass
     return {}
 
+@st.cache_data(ttl=10)
 def obtener_velas(symbol, timeframe="1h", limit=100):
     try:
         r = requests.get(f"{API_URL}/velas/{symbol}", params={"timeframe": timeframe, "limit": limit})
@@ -1090,13 +1094,26 @@ if page == "Dashboard":
         else:
             st.info("No se pudieron cargar los datos de PnL diario.")
 
+        # FIX: "distribucion" venia del backend (/dashboard/resumen) que la
+        # recorta a los primeros registros (por eso el selector solo llegaba
+        # a 5). Ahora se calcula aqui mismo con TODOS los clientes, igual que
+        # el resto de graficos, para poder elegir cualquier cantidad.
+        clientes_dist = fetch_clientes() or []
+        valor_total_dist = sum(float(c.get("valor_mercado", 0) or 0) for c in clientes_dist)
+        distribucion = []
+        if valor_total_dist > 0:
+            for c in clientes_dist:
+                vm = float(c.get("valor_mercado", 0) or 0)
+                if vm > 0:
+                    distribucion.append({"symbol": c["symbol"], "porcentaje": vm / valor_total_dist * 100})
+
         col_left, col_right = st.columns(2)
         with col_left:
             col_dist_title, col_dist_filter = st.columns([2, 1])
             with col_dist_title:
                 st.subheader("Distribucion del Portafolio")
             with col_dist_filter:
-                n_dist = st.number_input("Mostrar", min_value=3, max_value=max(len(distribucion), 3), value=min(10, max(len(distribucion), 3)), step=1, key="n_dist_dashboard", label_visibility="collapsed")
+                n_dist = st.number_input("Mostrar", min_value=3, max_value=max(len(distribucion), 3), value=max(len(distribucion), 3), step=1, key="n_dist_dashboard", label_visibility="collapsed")
             if distribucion:
                 df_dist = pd.DataFrame(distribucion).sort_values("porcentaje", ascending=False).head(int(n_dist))
                 fig = px.pie(df_dist, values="porcentaje", names="symbol", hole=0.4, title="Por Valor de Mercado")
@@ -1331,15 +1348,25 @@ elif page == "Clientes":
             "notas": st.column_config.TextColumn("Notas")
         }
 
-        edited_df = st.data_editor(
-            df_editor,
-            column_config={k: v for k, v in column_config.items() if k in columnas_editor},
-            use_container_width=True,
-            hide_index=True,
-            key="clientes_editor"
-        )
+        # FIX: antes el data_editor recargaba la app entera en cada edicion de
+        # celda (comportamiento normal de Streamlit), y como los datos de
+        # clientes se volvian a pedir en cada recarga, a veces la tabla se
+        # "reseteaba" antes de terminar de editar otro campo. Envolviendolo en
+        # un st.form evita que se dispare la recarga hasta que apretas
+        # "Guardar cambios realizados": podes editar todos los campos que
+        # quieras sin interrupciones.
+        with st.form("form_editar_clientes"):
+            edited_df = st.data_editor(
+                df_editor,
+                column_config={k: v for k, v in column_config.items() if k in columnas_editor},
+                use_container_width=True,
+                hide_index=True,
+                key="clientes_editor"
+            )
+            guardar_cambios = st.form_submit_button("Guardar cambios realizados")
 
-        if st.button("Guardar cambios realizados"):
+        if guardar_cambios:
+            algun_error = False
             for idx, row in edited_df.iterrows():
                 original = df_editor.iloc[idx]
                 if not row.equals(original):
@@ -1348,6 +1375,19 @@ elif page == "Clientes":
                     for col in campos_editables:
                         if row[col] != original[col]:
                             value = row[col]
+                            # FIX: los valores que vienen del data_editor son tipos de
+                            # numpy/pandas (np.float64, np.int64) y no todos son
+                            # JSON-serializables de forma directa; si uno de los
+                            # campos fallaba al serializar, el request se rechazaba
+                            # entero y parecia que "solo se guardaba un campo" (el
+                            # ultimo request que si funcionaba). Convertimos todo a
+                            # tipos nativos de Python antes de armar el body.
+                            if isinstance(value, (np.floating,)):
+                                value = float(value)
+                            elif isinstance(value, (np.integer,)):
+                                value = int(value)
+                            elif pd.isna(value):
+                                value = None
                             if col == "estado" and value:
                                 value = value.upper()
                             update_data[col] = value
@@ -1356,11 +1396,13 @@ elif page == "Clientes":
                             update_data["notas_personal"] = update_data.pop("notas")
                         resp = put(f"/clientes/{symbol}", update_data)
                         if resp:
-                            st.success(f"Cliente {symbol} actualizado")
+                            st.success(f"Cliente {symbol} actualizado ({len(update_data)} campo(s): {', '.join(update_data.keys())})")
                         else:
-                            st.error(f"Error actualizando {symbol}")
-            st.cache_data.clear()
-            st.rerun()
+                            algun_error = True
+                            st.error(f"Error actualizando {symbol} (campos: {', '.join(update_data.keys())})")
+            if not algun_error:
+                st.cache_data.clear()
+                st.rerun()
 
         # ========== ELIMINAR CLIENTE ==========
         st.divider()
@@ -1785,7 +1827,14 @@ elif page == "Analytics":
         col3.metric("PnL Total", f"${resumen.get('pnl_total',0):,.2f}")
 
     st.subheader("Distribucion del Portafolio")
-    distribucion = fetch("/dashboard/resumen").get("distribucion",[]) if data else []
+    clientes_dist_rep = fetch_clientes() or []
+    valor_total_dist_rep = sum(float(c.get("valor_mercado", 0) or 0) for c in clientes_dist_rep)
+    distribucion = []
+    if valor_total_dist_rep > 0:
+        for c in clientes_dist_rep:
+            vm = float(c.get("valor_mercado", 0) or 0)
+            if vm > 0:
+                distribucion.append({"symbol": c["symbol"], "porcentaje": vm / valor_total_dist_rep * 100})
     if distribucion:
         df_dist = pd.DataFrame(distribucion)
         fig = px.pie(df_dist, values="porcentaje", names="symbol", title="Composicion Actual")
@@ -1898,6 +1947,108 @@ elif page == "Mercado en Vivo":
             st.warning("No se pudieron obtener velas para este simbolo.")
     else:
         st.error("No se pudo obtener informacion del ticker. Intenta con otro simbolo.")
+
+    st.divider()
+    st.subheader("🚲 Bicicleta (Calculadora de Compra/Venta P2P)")
+    st.caption("Calculadora manual: convierte una compra en USD a Bs, descontando comision y aplicando la tasa de cambio.")
+
+    col_bici1, col_bici2 = st.columns(2)
+    with col_bici1:
+        # FIX: "Inversion" ahora en Bs (antes estaba en $, lo que mezclaba
+        # monedas contra "Total en Bs" al calcular la ganancia).
+        bici_inversion = st.number_input("Inversion (Bs)", min_value=0.0, step=0.01, format="%.2f", key="bici_inversion")
+        bici_comprado_en = st.number_input("Comprado en $", min_value=0.0, step=0.01, format="%.2f", key="bici_comprado_en")
+        bici_comision = st.number_input("Comision ($)", min_value=0.0, step=0.01, format="%.2f", key="bici_comision")
+        bici_tasa = st.number_input("Tasa (Bs por $)", min_value=0.0, step=0.01, format="%.4f", key="bici_tasa")
+
+    # Automaticos
+    bici_llegan = bici_comprado_en - bici_comision
+    bici_venta_binance = bici_llegan
+    bici_total_bs = bici_venta_binance * bici_tasa
+    bici_ganancias_bs = bici_total_bs - bici_inversion
+    bici_ganancias_usd = (bici_ganancias_bs / bici_tasa) if bici_tasa > 0 else 0.0
+
+    with col_bici2:
+        st.metric("Llegan ($)", f"${bici_llegan:,.2f}")
+        st.metric("Venta en Binance ($)", f"${bici_venta_binance:,.2f}")
+        st.metric("Total en Bs", f"Bs {bici_total_bs:,.2f}")
+        st.metric("Ganancias (Bs)", f"Bs {bici_ganancias_bs:,.2f}", delta=f"{bici_ganancias_bs:,.2f}")
+        st.metric("Ganancias ($)", f"${bici_ganancias_usd:,.2f}", delta=f"{bici_ganancias_usd:,.2f}")
+
+    # ========== HISTORIAL: guardar cada calculo para llevar registro de ganancias ==========
+    # Se guarda en un archivo JSON local (no toca el backend/FastAPI ni la base de
+    # datos principal del CRM, para no arriesgar romper nada que ya funciona).
+    BICICLETA_HISTORIAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bicicleta_historial.json")
+
+    def cargar_historial_bicicleta():
+        if os.path.exists(BICICLETA_HISTORIAL_PATH):
+            try:
+                with open(BICICLETA_HISTORIAL_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                return []
+        return []
+
+    def guardar_registro_bicicleta(registro):
+        historial = cargar_historial_bicicleta()
+        historial.append(registro)
+        with open(BICICLETA_HISTORIAL_PATH, "w", encoding="utf-8") as f:
+            json.dump(historial, f, ensure_ascii=False, indent=2)
+
+    if st.button("💾 Guardar este calculo en el registro"):
+        guardar_registro_bicicleta({
+            "fecha": datetime.now().isoformat(timespec="seconds"),
+            "inversion_bs": bici_inversion,
+            "comprado_en_usd": bici_comprado_en,
+            "comision_usd": bici_comision,
+            "llegan_usd": bici_llegan,
+            "venta_binance_usd": bici_venta_binance,
+            "tasa": bici_tasa,
+            "total_bs": bici_total_bs,
+            "ganancias_bs": bici_ganancias_bs,
+            "ganancias_usd": bici_ganancias_usd,
+        })
+        st.success("Registro guardado.")
+
+    historial_bici = cargar_historial_bicicleta()
+    if historial_bici:
+        st.markdown("##### 📊 Historial de Ganancias (Bicicleta)")
+        df_bici = pd.DataFrame(historial_bici)
+        df_bici["fecha"] = pd.to_datetime(df_bici["fecha"])
+
+        col_bici_chart, col_bici_filter = st.columns([3, 1])
+        with col_bici_filter:
+            tipo_grafico_bici = st.selectbox("Tipo de grafico", ["Barras", "Linea"], key="bici_tipo_grafico")
+            n_bici = st.number_input("Mostrar", min_value=1, max_value=max(len(df_bici), 1), value=len(df_bici), step=1, key="n_bici_historial")
+
+        df_bici_mostrar = df_bici.tail(int(n_bici))
+        with col_bici_chart:
+            if tipo_grafico_bici == "Barras":
+                fig_bici = go.Figure(go.Bar(
+                    x=df_bici_mostrar["fecha"], y=df_bici_mostrar["ganancias_usd"],
+                    marker_color=['green' if v >= 0 else 'red' for v in df_bici_mostrar["ganancias_usd"]],
+                    text=df_bici_mostrar["ganancias_usd"].apply(lambda x: f"${x:,.2f}"), textposition='auto'
+                ))
+            else:
+                fig_bici = go.Figure(go.Scatter(
+                    x=df_bici_mostrar["fecha"], y=df_bici_mostrar["ganancias_usd"],
+                    mode="lines+markers", line=dict(color="#2ecc71")
+                ))
+            fig_bici.update_layout(title="Ganancias por Calculo Guardado (USD)", xaxis_title="Fecha", yaxis_title="Ganancias ($)")
+            st.plotly_chart(fig_bici, use_container_width=True)
+
+        col_bici_tot1, col_bici_tot2 = st.columns(2)
+        col_bici_tot1.metric("Ganancia total acumulada ($)", f"${df_bici['ganancias_usd'].sum():,.2f}")
+        col_bici_tot2.metric("Cantidad de registros", len(df_bici))
+
+        with st.expander("Ver / borrar historial completo"):
+            st.dataframe(df_bici.sort_values("fecha", ascending=False), use_container_width=True, hide_index=True)
+            if st.button("🗑️ Borrar todo el historial de Bicicleta"):
+                with open(BICICLETA_HISTORIAL_PATH, "w", encoding="utf-8") as f:
+                    json.dump([], f)
+                st.rerun()
+    else:
+        st.info("Todavia no guardaste ningun calculo. Usa el boton de arriba para empezar a llevar el registro.")
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGINA: TENDENCIAS DE MERCADO (CoinGecko)

@@ -405,6 +405,38 @@ def fetch_clientes():
     """Version cacheada de fetch('/clientes/'), TTL 15s para evitar llamadas repetidas."""
     return fetch("/clientes/")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# HISTORIAL DE BICICLETA (modulo compartido entre "Mercado en Vivo" y "Analytics")
+# ═══════════════════════════════════════════════════════════════════════════════
+BICICLETA_HISTORIAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bicicleta_historial.json")
+
+def cargar_historial_bicicleta():
+    if os.path.exists(BICICLETA_HISTORIAL_PATH):
+        try:
+            with open(BICICLETA_HISTORIAL_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def guardar_registro_bicicleta(registro):
+    historial = cargar_historial_bicicleta()
+    historial.append(registro)
+    with open(BICICLETA_HISTORIAL_PATH, "w", encoding="utf-8") as f:
+        json.dump(historial, f, ensure_ascii=False, indent=2)
+
+def resumen_bicicleta():
+    """Total invertido y ganancias acumuladas de la Bicicleta, para usar en Analytics."""
+    historial = cargar_historial_bicicleta()
+    total_invertido = sum(float(h.get("comprado_en_usd", 0) or 0) for h in historial)
+    total_ganancias = sum(float(h.get("ganancias_usd", 0) or 0) for h in historial)
+    return {
+        "total_invertido": round(total_invertido, 2),
+        "total_ganancias": round(total_ganancias, 2),
+        "registros": len(historial),
+        "historial": historial
+    }
+
 def post(endpoint, data):
     try:
         r = requests.post(f"{API_URL}{endpoint}", json=data)
@@ -1819,8 +1851,8 @@ elif page == "Analytics":
         st.info("No se pudieron cargar los datos de rendimiento por categoria.")
 
     data = fetch("/dashboard/resumen")
+    resumen = data.get("resumen", {}) if data else {}
     if data:
-        resumen = data.get("resumen", {})
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Invertido", f"${resumen.get('total_invertido',0):,.2f}")
         col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado',0):,.2f}")
@@ -1859,6 +1891,151 @@ elif page == "Analytics":
             st.info("No hay datos de PnL para los ultimos 7 dias.")
     else:
         st.info("No se pudieron cargar los datos de PnL diario.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NUEVO: BICICLETA - Total invertido y ganancias
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("🚲 Bicicleta - Total Invertido y Ganancias")
+    bici_stats = resumen_bicicleta()
+    bc1, bc2, bc3 = st.columns(3)
+    bc1.metric("Total Invertido ($)", f"${bici_stats['total_invertido']:,.2f}")
+    bc2.metric(
+        "Ganancias Totales ($)",
+        f"${bici_stats['total_ganancias']:,.2f}",
+        delta=f"${bici_stats['total_ganancias']:,.2f}" if bici_stats['total_ganancias'] >= 0 else f"-${abs(bici_stats['total_ganancias']):,.2f}",
+        delta_color="normal" if bici_stats['total_ganancias'] >= 0 else "inverse"
+    )
+    bc3.metric("Calculos Guardados", bici_stats['registros'])
+
+    if bici_stats["historial"]:
+        df_bici_an = pd.DataFrame(bici_stats["historial"])
+        df_bici_an["fecha"] = pd.to_datetime(df_bici_an["fecha"])
+        fig_bici_an = go.Figure(go.Bar(
+            x=df_bici_an["fecha"], y=df_bici_an["ganancias_usd"],
+            marker_color=['green' if v >= 0 else 'red' for v in df_bici_an["ganancias_usd"]],
+            text=df_bici_an["ganancias_usd"].apply(lambda x: f"${x:,.2f}"),
+            textposition='auto'
+        ))
+        fig_bici_an.update_layout(title="Ganancias de Bicicleta por Registro (USD)", xaxis_title="Fecha", yaxis_title="Ganancias ($)")
+        st.plotly_chart(fig_bici_an, use_container_width=True)
+    else:
+        st.info("Todavia no hay calculos guardados de Bicicleta. Guarda uno desde 'Mercado en Vivo'.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NUEVO: INVERSIONES DEPORTIVAS - Total invertido, ganancias y perdidas
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("⚽ Inversiones Deportivas - Total Invertido, Ganancias y Perdidas")
+    deportes_stats = fetch("/deportes/resumen")
+    if deportes_stats:
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        dc1.metric("Total Invertido Historico (Bs)", f"Bs {deportes_stats.get('capital_total_historico', 0):,.2f}")
+        pnl_dep = deportes_stats.get('pnl_neto', 0)
+        dc2.metric(
+            "Ganancia/Perdida Neta (Bs)",
+            f"Bs {pnl_dep:,.2f}",
+            delta=f"Bs {pnl_dep:,.2f}" if pnl_dep >= 0 else f"-Bs {abs(pnl_dep):,.2f}",
+            delta_color="normal" if pnl_dep >= 0 else "inverse"
+        )
+        dc3.metric("✅ Ganadas", deportes_stats.get('ganadas', 0))
+        dc4.metric("❌ Perdidas", deportes_stats.get('perdidas', 0))
+
+        pnl_diario_dep = fetch("/deportes/pnl-diario?dias=7")
+        if pnl_diario_dep:
+            df_dep_pnl = pd.DataFrame(pnl_diario_dep)
+            if not df_dep_pnl.empty:
+                fig_dep = go.Figure(go.Bar(
+                    x=df_dep_pnl["fecha"], y=df_dep_pnl["pnl"],
+                    marker_color=['green' if v >= 0 else 'red' for v in df_dep_pnl["pnl"]],
+                    text=df_dep_pnl["pnl"].apply(lambda x: f"Bs {x:.2f}"),
+                    textposition='auto'
+                ))
+                fig_dep.update_layout(title="PnL de Inversiones Deportivas (Ultimos 7 dias)", xaxis_title="Fecha", yaxis_title="PnL (Bs)")
+                st.plotly_chart(fig_dep, use_container_width=True)
+            else:
+                st.info("No hay PnL diario de Inversiones Deportivas en los ultimos 7 dias.")
+    else:
+        st.info("No se pudieron cargar los datos de Inversiones Deportivas.")
+        deportes_stats = {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NUEVO: RESUMEN GENERAL COMBINADO (Cripto + Bicicleta + Inversiones Deportivas)
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("🧮 Resumen General Combinado (Cripto + Bicicleta + Deportes)")
+
+    total_invertido_cripto = float(resumen.get('total_invertido', 0) or 0)
+    pnl_cripto = float(resumen.get('pnl_total', 0) or 0)
+    total_invertido_bici = bici_stats['total_invertido']
+    ganancias_bici = bici_stats['total_ganancias']
+    # Inversiones Deportivas se maneja en Bs, no en $ (ver dashboard/deportes.py).
+    total_invertido_deportes_bs = float((deportes_stats or {}).get('capital_total_historico', 0) or 0)
+    pnl_deportes_bs = float((deportes_stats or {}).get('pnl_neto', 0) or 0)
+
+    rg1, rg2, rg3 = st.columns([1, 1, 1])
+    with rg3:
+        tasa_bcv = st.number_input(
+            "Tasa BCV (Bs por $)",
+            min_value=0.0, value=0.0, step=0.01, format="%.4f",
+            key="tasa_bcv_analytics",
+            help="Tasa del dia del BCV. Se usa para convertir el Capital y el PnL de Inversiones Deportivas (en Bs) a $ antes de sumarlos al resto."
+        )
+
+    if tasa_bcv > 0:
+        total_invertido_deportes_usd = total_invertido_deportes_bs / tasa_bcv
+        pnl_deportes_usd = pnl_deportes_bs / tasa_bcv
+    else:
+        total_invertido_deportes_usd = 0.0
+        pnl_deportes_usd = 0.0
+        st.warning("⚠️ Ingresa la Tasa BCV para incluir Inversiones Deportivas (Bs) convertida correctamente en el resumen combinado ($). Mientras tanto, este sector no se suma al total.")
+
+    total_invertido_general = total_invertido_cripto + total_invertido_bici + total_invertido_deportes_usd
+    pnl_general = pnl_cripto + ganancias_bici + pnl_deportes_usd
+
+    with rg1:
+        st.metric("💵 Total Invertido (Todos los sectores)", f"${total_invertido_general:,.2f}")
+    with rg2:
+        st.metric(
+            "📊 Ganancia/Perdida Total Combinada",
+            f"${pnl_general:,.2f}",
+            delta=f"${pnl_general:,.2f}" if pnl_general >= 0 else f"-${abs(pnl_general):,.2f}",
+            delta_color="normal" if pnl_general >= 0 else "inverse"
+        )
+
+    if tasa_bcv > 0:
+        st.caption(
+            f"Inversiones Deportivas: Bs {total_invertido_deportes_bs:,.2f} invertidos / Bs {pnl_deportes_bs:,.2f} PnL Neto "
+            f"→ convertido a ${total_invertido_deportes_usd:,.2f} / ${pnl_deportes_usd:,.2f} con tasa {tasa_bcv:,.4f} Bs/$."
+        )
+
+    if pnl_general >= 0:
+        st.success(f"🟢 En conjunto vas GANANDO ${pnl_general:,.2f} sumando Criptomonedas, Bicicleta e Inversiones Deportivas.")
+    else:
+        st.error(f"🔴 En conjunto vas PERDIENDO ${abs(pnl_general):,.2f} sumando Criptomonedas, Bicicleta e Inversiones Deportivas.")
+
+    df_resumen_general = pd.DataFrame([
+        {"Sector": "Criptomonedas", "Total Invertido": total_invertido_cripto, "Ganancia/Perdida": pnl_cripto},
+        {"Sector": "Bicicleta", "Total Invertido": total_invertido_bici, "Ganancia/Perdida": ganancias_bici},
+        {"Sector": "Inversiones Deportivas ($)", "Total Invertido": total_invertido_deportes_usd, "Ganancia/Perdida": pnl_deportes_usd},
+    ])
+
+    rg_col1, rg_col2 = st.columns(2)
+    with rg_col1:
+        fig_inv_general = px.bar(
+            df_resumen_general, x="Sector", y="Total Invertido",
+            title="Total Invertido por Sector ($)", text="Total Invertido", color="Sector"
+        )
+        fig_inv_general.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+        st.plotly_chart(fig_inv_general, use_container_width=True)
+    with rg_col2:
+        fig_pnl_general = px.bar(
+            df_resumen_general, x="Sector", y="Ganancia/Perdida",
+            title="Ganancia/Perdida por Sector ($)", text="Ganancia/Perdida",
+            color="Ganancia/Perdida", color_continuous_scale="RdYlGn"
+        )
+        fig_pnl_general.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+        st.plotly_chart(fig_pnl_general, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGINA: MERCADO EN VIVO
@@ -1978,23 +2155,9 @@ elif page == "Mercado en Vivo":
     # ========== HISTORIAL: guardar cada calculo para llevar registro de ganancias ==========
     # Se guarda en un archivo JSON local (no toca el backend/FastAPI ni la base de
     # datos principal del CRM, para no arriesgar romper nada que ya funciona).
-    BICICLETA_HISTORIAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bicicleta_historial.json")
-
-    def cargar_historial_bicicleta():
-        if os.path.exists(BICICLETA_HISTORIAL_PATH):
-            try:
-                with open(BICICLETA_HISTORIAL_PATH, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return []
-        return []
-
-    def guardar_registro_bicicleta(registro):
-        historial = cargar_historial_bicicleta()
-        historial.append(registro)
-        with open(BICICLETA_HISTORIAL_PATH, "w", encoding="utf-8") as f:
-            json.dump(historial, f, ensure_ascii=False, indent=2)
-
+    # NOTA: cargar_historial_bicicleta / guardar_registro_bicicleta ahora estan
+    # definidas a nivel de modulo (mas arriba) para poder reutilizarlas tambien
+    # desde la pagina de Analytics.
     if st.button("💾 Guardar este calculo en el registro"):
         guardar_registro_bicicleta({
             "fecha": datetime.now().isoformat(timespec="seconds"),
@@ -2376,3 +2539,4 @@ elif page == "Configuracion":
         except Exception as e:
             st.error(f"Error: {e}")
     st.info("Para restaurar un respaldo, reemplaza manualmente el archivo crypto_crm.db en la carpeta del proyecto y reinicia la aplicacion.")
+

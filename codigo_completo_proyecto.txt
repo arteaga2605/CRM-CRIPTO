@@ -3094,6 +3094,38 @@ def fetch_clientes():
     """Version cacheada de fetch('/clientes/'), TTL 15s para evitar llamadas repetidas."""
     return fetch("/clientes/")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# HISTORIAL DE BICICLETA (modulo compartido entre "Mercado en Vivo" y "Analytics")
+# ═══════════════════════════════════════════════════════════════════════════════
+BICICLETA_HISTORIAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bicicleta_historial.json")
+
+def cargar_historial_bicicleta():
+    if os.path.exists(BICICLETA_HISTORIAL_PATH):
+        try:
+            with open(BICICLETA_HISTORIAL_PATH, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def guardar_registro_bicicleta(registro):
+    historial = cargar_historial_bicicleta()
+    historial.append(registro)
+    with open(BICICLETA_HISTORIAL_PATH, "w", encoding="utf-8") as f:
+        json.dump(historial, f, ensure_ascii=False, indent=2)
+
+def resumen_bicicleta():
+    """Total invertido y ganancias acumuladas de la Bicicleta, para usar en Analytics."""
+    historial = cargar_historial_bicicleta()
+    total_invertido = sum(float(h.get("comprado_en_usd", 0) or 0) for h in historial)
+    total_ganancias = sum(float(h.get("ganancias_usd", 0) or 0) for h in historial)
+    return {
+        "total_invertido": round(total_invertido, 2),
+        "total_ganancias": round(total_ganancias, 2),
+        "registros": len(historial),
+        "historial": historial
+    }
+
 def post(endpoint, data):
     try:
         r = requests.post(f"{API_URL}{endpoint}", json=data)
@@ -4508,8 +4540,8 @@ elif page == "Analytics":
         st.info("No se pudieron cargar los datos de rendimiento por categoria.")
 
     data = fetch("/dashboard/resumen")
+    resumen = data.get("resumen", {}) if data else {}
     if data:
-        resumen = data.get("resumen", {})
         col1, col2, col3 = st.columns(3)
         col1.metric("Total Invertido", f"${resumen.get('total_invertido',0):,.2f}")
         col2.metric("Valor Mercado", f"${resumen.get('total_valor_mercado',0):,.2f}")
@@ -4548,6 +4580,151 @@ elif page == "Analytics":
             st.info("No hay datos de PnL para los ultimos 7 dias.")
     else:
         st.info("No se pudieron cargar los datos de PnL diario.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NUEVO: BICICLETA - Total invertido y ganancias
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("🚲 Bicicleta - Total Invertido y Ganancias")
+    bici_stats = resumen_bicicleta()
+    bc1, bc2, bc3 = st.columns(3)
+    bc1.metric("Total Invertido ($)", f"${bici_stats['total_invertido']:,.2f}")
+    bc2.metric(
+        "Ganancias Totales ($)",
+        f"${bici_stats['total_ganancias']:,.2f}",
+        delta=f"${bici_stats['total_ganancias']:,.2f}" if bici_stats['total_ganancias'] >= 0 else f"-${abs(bici_stats['total_ganancias']):,.2f}",
+        delta_color="normal" if bici_stats['total_ganancias'] >= 0 else "inverse"
+    )
+    bc3.metric("Calculos Guardados", bici_stats['registros'])
+
+    if bici_stats["historial"]:
+        df_bici_an = pd.DataFrame(bici_stats["historial"])
+        df_bici_an["fecha"] = pd.to_datetime(df_bici_an["fecha"])
+        fig_bici_an = go.Figure(go.Bar(
+            x=df_bici_an["fecha"], y=df_bici_an["ganancias_usd"],
+            marker_color=['green' if v >= 0 else 'red' for v in df_bici_an["ganancias_usd"]],
+            text=df_bici_an["ganancias_usd"].apply(lambda x: f"${x:,.2f}"),
+            textposition='auto'
+        ))
+        fig_bici_an.update_layout(title="Ganancias de Bicicleta por Registro (USD)", xaxis_title="Fecha", yaxis_title="Ganancias ($)")
+        st.plotly_chart(fig_bici_an, use_container_width=True)
+    else:
+        st.info("Todavia no hay calculos guardados de Bicicleta. Guarda uno desde 'Mercado en Vivo'.")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NUEVO: INVERSIONES DEPORTIVAS - Total invertido, ganancias y perdidas
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("⚽ Inversiones Deportivas - Total Invertido, Ganancias y Perdidas")
+    deportes_stats = fetch("/deportes/resumen")
+    if deportes_stats:
+        dc1, dc2, dc3, dc4 = st.columns(4)
+        dc1.metric("Total Invertido Historico (Bs)", f"Bs {deportes_stats.get('capital_total_historico', 0):,.2f}")
+        pnl_dep = deportes_stats.get('pnl_neto', 0)
+        dc2.metric(
+            "Ganancia/Perdida Neta (Bs)",
+            f"Bs {pnl_dep:,.2f}",
+            delta=f"Bs {pnl_dep:,.2f}" if pnl_dep >= 0 else f"-Bs {abs(pnl_dep):,.2f}",
+            delta_color="normal" if pnl_dep >= 0 else "inverse"
+        )
+        dc3.metric("✅ Ganadas", deportes_stats.get('ganadas', 0))
+        dc4.metric("❌ Perdidas", deportes_stats.get('perdidas', 0))
+
+        pnl_diario_dep = fetch("/deportes/pnl-diario?dias=7")
+        if pnl_diario_dep:
+            df_dep_pnl = pd.DataFrame(pnl_diario_dep)
+            if not df_dep_pnl.empty:
+                fig_dep = go.Figure(go.Bar(
+                    x=df_dep_pnl["fecha"], y=df_dep_pnl["pnl"],
+                    marker_color=['green' if v >= 0 else 'red' for v in df_dep_pnl["pnl"]],
+                    text=df_dep_pnl["pnl"].apply(lambda x: f"Bs {x:.2f}"),
+                    textposition='auto'
+                ))
+                fig_dep.update_layout(title="PnL de Inversiones Deportivas (Ultimos 7 dias)", xaxis_title="Fecha", yaxis_title="PnL (Bs)")
+                st.plotly_chart(fig_dep, use_container_width=True)
+            else:
+                st.info("No hay PnL diario de Inversiones Deportivas en los ultimos 7 dias.")
+    else:
+        st.info("No se pudieron cargar los datos de Inversiones Deportivas.")
+        deportes_stats = {}
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # NUEVO: RESUMEN GENERAL COMBINADO (Cripto + Bicicleta + Inversiones Deportivas)
+    # ─────────────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("🧮 Resumen General Combinado (Cripto + Bicicleta + Deportes)")
+
+    total_invertido_cripto = float(resumen.get('total_invertido', 0) or 0)
+    pnl_cripto = float(resumen.get('pnl_total', 0) or 0)
+    total_invertido_bici = bici_stats['total_invertido']
+    ganancias_bici = bici_stats['total_ganancias']
+    # Inversiones Deportivas se maneja en Bs, no en $ (ver dashboard/deportes.py).
+    total_invertido_deportes_bs = float((deportes_stats or {}).get('capital_total_historico', 0) or 0)
+    pnl_deportes_bs = float((deportes_stats or {}).get('pnl_neto', 0) or 0)
+
+    rg1, rg2, rg3 = st.columns([1, 1, 1])
+    with rg3:
+        tasa_bcv = st.number_input(
+            "Tasa BCV (Bs por $)",
+            min_value=0.0, value=0.0, step=0.01, format="%.4f",
+            key="tasa_bcv_analytics",
+            help="Tasa del dia del BCV. Se usa para convertir el Capital y el PnL de Inversiones Deportivas (en Bs) a $ antes de sumarlos al resto."
+        )
+
+    if tasa_bcv > 0:
+        total_invertido_deportes_usd = total_invertido_deportes_bs / tasa_bcv
+        pnl_deportes_usd = pnl_deportes_bs / tasa_bcv
+    else:
+        total_invertido_deportes_usd = 0.0
+        pnl_deportes_usd = 0.0
+        st.warning("⚠️ Ingresa la Tasa BCV para incluir Inversiones Deportivas (Bs) convertida correctamente en el resumen combinado ($). Mientras tanto, este sector no se suma al total.")
+
+    total_invertido_general = total_invertido_cripto + total_invertido_bici + total_invertido_deportes_usd
+    pnl_general = pnl_cripto + ganancias_bici + pnl_deportes_usd
+
+    with rg1:
+        st.metric("💵 Total Invertido (Todos los sectores)", f"${total_invertido_general:,.2f}")
+    with rg2:
+        st.metric(
+            "📊 Ganancia/Perdida Total Combinada",
+            f"${pnl_general:,.2f}",
+            delta=f"${pnl_general:,.2f}" if pnl_general >= 0 else f"-${abs(pnl_general):,.2f}",
+            delta_color="normal" if pnl_general >= 0 else "inverse"
+        )
+
+    if tasa_bcv > 0:
+        st.caption(
+            f"Inversiones Deportivas: Bs {total_invertido_deportes_bs:,.2f} invertidos / Bs {pnl_deportes_bs:,.2f} PnL Neto "
+            f"→ convertido a ${total_invertido_deportes_usd:,.2f} / ${pnl_deportes_usd:,.2f} con tasa {tasa_bcv:,.4f} Bs/$."
+        )
+
+    if pnl_general >= 0:
+        st.success(f"🟢 En conjunto vas GANANDO ${pnl_general:,.2f} sumando Criptomonedas, Bicicleta e Inversiones Deportivas.")
+    else:
+        st.error(f"🔴 En conjunto vas PERDIENDO ${abs(pnl_general):,.2f} sumando Criptomonedas, Bicicleta e Inversiones Deportivas.")
+
+    df_resumen_general = pd.DataFrame([
+        {"Sector": "Criptomonedas", "Total Invertido": total_invertido_cripto, "Ganancia/Perdida": pnl_cripto},
+        {"Sector": "Bicicleta", "Total Invertido": total_invertido_bici, "Ganancia/Perdida": ganancias_bici},
+        {"Sector": "Inversiones Deportivas ($)", "Total Invertido": total_invertido_deportes_usd, "Ganancia/Perdida": pnl_deportes_usd},
+    ])
+
+    rg_col1, rg_col2 = st.columns(2)
+    with rg_col1:
+        fig_inv_general = px.bar(
+            df_resumen_general, x="Sector", y="Total Invertido",
+            title="Total Invertido por Sector ($)", text="Total Invertido", color="Sector"
+        )
+        fig_inv_general.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+        st.plotly_chart(fig_inv_general, use_container_width=True)
+    with rg_col2:
+        fig_pnl_general = px.bar(
+            df_resumen_general, x="Sector", y="Ganancia/Perdida",
+            title="Ganancia/Perdida por Sector ($)", text="Ganancia/Perdida",
+            color="Ganancia/Perdida", color_continuous_scale="RdYlGn"
+        )
+        fig_pnl_general.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+        st.plotly_chart(fig_pnl_general, use_container_width=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # PAGINA: MERCADO EN VIVO
@@ -4667,23 +4844,9 @@ elif page == "Mercado en Vivo":
     # ========== HISTORIAL: guardar cada calculo para llevar registro de ganancias ==========
     # Se guarda en un archivo JSON local (no toca el backend/FastAPI ni la base de
     # datos principal del CRM, para no arriesgar romper nada que ya funciona).
-    BICICLETA_HISTORIAL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "bicicleta_historial.json")
-
-    def cargar_historial_bicicleta():
-        if os.path.exists(BICICLETA_HISTORIAL_PATH):
-            try:
-                with open(BICICLETA_HISTORIAL_PATH, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            except Exception:
-                return []
-        return []
-
-    def guardar_registro_bicicleta(registro):
-        historial = cargar_historial_bicicleta()
-        historial.append(registro)
-        with open(BICICLETA_HISTORIAL_PATH, "w", encoding="utf-8") as f:
-            json.dump(historial, f, ensure_ascii=False, indent=2)
-
+    # NOTA: cargar_historial_bicicleta / guardar_registro_bicicleta ahora estan
+    # definidas a nivel de modulo (mas arriba) para poder reutilizarlas tambien
+    # desde la pagina de Analytics.
     if st.button("💾 Guardar este calculo en el registro"):
         guardar_registro_bicicleta({
             "fecha": datetime.now().isoformat(timespec="seconds"),
@@ -5066,553 +5229,41 @@ elif page == "Configuracion":
             st.error(f"Error: {e}")
     st.info("Para restaurar un respaldo, reemplaza manualmente el archivo crypto_crm.db en la carpeta del proyecto y reinicia la aplicacion.")
 
-================================================================================
-  FIN DE ARCHIVO: dashboard/streamlit_app.py
-================================================================================
 
 ================================================================================
-  ARCHIVO: dashboard/noticias.py
-================================================================================
-import streamlit as st
-import feedparser
-from datetime import datetime
-
-@st.cache_data(ttl=600)
-def obtener_noticias_rss():
-    url = "https://es.cointelegraph.com/rss"
-    try:
-        feed = feedparser.parse(url)
-        noticias = []
-        for entry in feed.entries[:20]:
-            noticias.append({
-                "titulo": entry.get("title", "Sin título"),
-                "descripcion": entry.get("summary", ""),
-                "fuente": "Cointelegraph en Español",
-                "url": entry.get("link", "#"),
-                "fecha": entry.get("published", ""),
-                "dominio": "es.cointelegraph.com"
-            })
-        return noticias
-    except Exception as e:
-        st.error(f"Error al obtener noticias: {e}")
-        return []
-
-def mostrar_pagina_noticias():
-    st.title("📰 Noticias del mundo cripto")
-    st.markdown("Fuente: **Cointelegraph en Español** (feed RSS público)")
-    
-    with st.spinner("Cargando últimas noticias..."):
-        noticias = obtener_noticias_rss()
-    
-    if not noticias:
-        st.warning("No se pudieron cargar noticias en este momento. Intenta más tarde.")
-        return
-    
-    for idx, noticia in enumerate(noticias):
-        with st.expander(f"🔹 {noticia['titulo'][:100]}"):
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.markdown(f"**{noticia['titulo']}**")
-                if noticia['descripcion']:
-                    desc_limpia = noticia['descripcion'].replace('<p>', '').replace('</p>', '').replace('<br />', '')
-                    st.write(desc_limpia[:300] + "...")
-                st.caption(f"Fuente: {noticia['fuente']} | {noticia['fecha'][:16] if noticia['fecha'] else 'Fecha desconocida'}")
-                st.markdown(f"[Leer más]({noticia['url']})", unsafe_allow_html=True)
-            with col2:
-                st.image(f"https://www.google.com/s2/favicons?domain={noticia['dominio']}", width=32)
-        st.divider()
-    
-    st.caption("Noticias obtenidas del feed RSS de Cointelegraph – Actualización automática cada 10 minutos.")
-
-================================================================================
-  FIN DE ARCHIVO: dashboard/noticias.py
-================================================================================
-
-================================================================================
-  ARCHIVO: dashboard/p2p.py
-================================================================================
-import streamlit as st
-import requests
-import pandas as pd
-from datetime import datetime
-
-API_URL = "http://localhost:8000"
-
-@st.cache_data(ttl=300)
-def obtener_datos_p2p(asset, fiat):
-    try:
-        r = requests.get(f"{API_URL}/p2p/best-prices", params={"asset": asset, "fiat": fiat}, timeout=10)
-        if r.status_code == 200:
-            return r.json()
-        else:
-            st.error(f"Error {r.status_code}")
-            return None
-    except Exception as e:
-        st.error(f"Error de conexión: {e}")
-        return None
-
-def mostrar_pagina_p2p():
-    st.title("📊 Mercado P2P Binance")
-    st.markdown("Monitorea spreads entre compra y venta para detectar oportunidades de arbitraje.")
-
-    col1, col2 = st.columns(2)
-    with col1:
-        asset = st.selectbox("Criptomoneda", ["USDT", "BTC", "ETH", "BNB"], index=0)
-    with col2:
-        fiat = st.selectbox("Moneda fiat", ["ARS", "MXN", "COP", "PEN", "CLP", "BRL", "VES", "USD"], index=0)
-
-    if st.button("🔄 Actualizar ahora"):
-        st.cache_data.clear()
-        st.rerun()
-
-    with st.spinner("Consultando Binance P2P..."):
-        data = obtener_datos_p2p(asset, fiat)
-
-    if not data:
-        st.warning("No se pudieron obtener datos. Intenta más tarde.")
-        return
-
-    col_a, col_b, col_c, col_d = st.columns(4)
-    col_a.metric("💰 Comprar (SELL)", f"${data['buy_price']:.2f}", delta=f"${data['buy_price']:.2f}")
-    col_b.metric("💰 Vender (BUY)", f"${data['sell_price']:.2f}", delta=f"${data['sell_price']:.2f}")
-    col_c.metric("Spread absoluto", f"${data['spread_abs']:.2f}")
-    col_d.metric("Spread %", f"{data['spread_pct']:.2f}%", 
-                 delta=f"{data['spread_pct']:.2f}%" if data['spread_pct'] > 0 else None)
-
-    st.divider()
-
-    if data['spread_pct'] > 1.0:
-        st.success(f"📢 **Oportunidad de arbitraje!** Comprar a ${data['buy_price']:.2f} y vender a ${data['sell_price']:.2f} → ganancia de ${data['spread_abs']:.2f} por unidad ({data['spread_pct']:.2f}%).")
-    else:
-        st.info("Spread bajo. No hay oportunidad clara en este momento.")
-
-    st.subheader("📈 Órdenes de compra (ellos compran, nosotros vendemos)")
-    buy_orders = data.get("buy_orders", [])
-    if buy_orders:
-        df_buy = pd.DataFrame([{
-            "Precio": float(o["adv"]["price"]),
-            "Monto mínimo": float(o["adv"]["minSingleTransAmount"]),
-            "Monto máximo": float(o["adv"]["maxSingleTransAmount"]),
-            "Métodos de pago": ", ".join([p["payType"] for p in o["adv"].get("payTypes", [])])
-        } for o in buy_orders])
-        st.dataframe(df_buy, width='stretch')
-    else:
-        st.info("No hay órdenes de compra.")
-
-    st.subheader("📉 Órdenes de venta (ellos venden, nosotros compramos)")
-    sell_orders = data.get("sell_orders", [])
-    if sell_orders:
-        df_sell = pd.DataFrame([{
-            "Precio": float(o["adv"]["price"]),
-            "Monto mínimo": float(o["adv"]["minSingleTransAmount"]),
-            "Monto máximo": float(o["adv"]["maxSingleTransAmount"]),
-            "Métodos de pago": ", ".join([p["payType"] for p in o["adv"].get("payTypes", [])])
-        } for o in sell_orders])
-        st.dataframe(df_sell, width='stretch')
-    else:
-        st.info("No hay órdenes de venta.")
-
-    st.caption(f"Última actualización: {data.get('timestamp', '')}")
-
-================================================================================
-  FIN DE ARCHIVO: dashboard/p2p.py
-================================================================================
-
-================================================================================
-  ARCHIVO: config.py
-================================================================================
-from pydantic_settings import BaseSettings
-from typing import Optional
-
-class Settings(BaseSettings):
-    DATABASE_URL: str = "sqlite:///./crypto_crm.db"
-    API_HOST: str = "0.0.0.0"
-    API_PORT: int = 8000
-    DEBUG: bool = True
-    EXCHANGE_ID: str = "binance"
-    EXCHANGE_API_KEY: Optional[str] = None
-    EXCHANGE_API_SECRET: Optional[str] = None
-    REDIS_URL: str = "redis://localhost:6379/0"
-    ALERTA_PERDIDA_PORCENTAJE: float = 20.0
-    ALERTA_GANANCIA_PORCENTAJE: float = 50.0
-    ALERTA_CONCENTRACION_MAX: float = 30.0
-    DIAS_CLIENTE_DORMIDO: int = 30
-
-    class Config:
-        env_file = ".env"
-
-settings = Settings()
-
-================================================================================
-  FIN DE ARCHIVO: config.py
+  FIN DE ARCHIVO: dashboard/deportes.py
 ================================================================================
 ================================================================================
-  ARCHIVO: app/services/deportes_service.py
+  ARCHIVO: requirements.txt
 ================================================================================
-from sqlalchemy.orm import Session
-from sqlalchemy import func
-from datetime import datetime, timedelta
-from decimal import Decimal
-from typing import List, Dict, Any, Optional
-
-from app.models import InversionDeportiva, TipoMercadoDeportivo, EstadoInversionDeportiva, RetiroDeportivo, InyeccionCapitalDeportivo
-
-class DeportesService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    def crear_inversion(self, deporte: str, tipo_mercado: str, objetivo: str,
-                        capital: float, ganancia_pot: float, perdida_pot: float,
-                        notas: str = "") -> InversionDeportiva:
-        tipo_enum = TipoMercadoDeportivo[tipo_mercado.upper()]
-
-        if tipo_enum == TipoMercadoDeportivo.EQUIPO:
-            objetivo_formateado = str(objetivo).strip().upper()
-        elif tipo_enum == TipoMercadoDeportivo.RESULTADO:
-            objetivo_formateado = str(objetivo).strip()
-        else:
-            objetivo_formateado = str(objetivo).strip().upper()
-
-        ganancia_neta = Decimal(str(ganancia_pot)) - Decimal(str(capital))
-
-        inversion = InversionDeportiva(
-            deporte=deporte.upper(),
-            tipo_mercado=tipo_enum,
-            objetivo=objetivo_formateado,
-            capital_invertido=Decimal(str(capital)),
-            ganancia_potencial=ganancia_neta,
-            perdida_potencial=Decimal(str(perdida_pot)),
-            estado=EstadoInversionDeportiva.ABIERTA,
-            pnl_realizado=Decimal("0.00"),
-            cuota_odds=None,
-            notas=notas
-        )
-        self.db.add(inversion)
-        self.db.commit()
-        self.db.refresh(inversion)
-        return inversion
-
-    def liquidar_inversion(self, inv_id: int, nuevo_estado: str) -> InversionDeportiva:
-        inv = self.db.query(InversionDeportiva).filter_by(id=inv_id).first()
-        if not inv:
-            raise ValueError("Inversión no encontrada")
-
-        estado_enum = EstadoInversionDeportiva[nuevo_estado.upper()]
-        inv.estado = estado_enum
-        inv.fecha_cierre = datetime.utcnow()
-
-        if estado_enum == EstadoInversionDeportiva.GANADA:
-            inv.pnl_realizado = inv.ganancia_potencial
-        elif estado_enum == EstadoInversionDeportiva.PERDIDA:
-            inv.pnl_realizado = -abs(inv.perdida_potencial)
-        else:
-            inv.pnl_realizado = Decimal("0.00")
-
-        self.db.commit()
-        self.db.refresh(inv)
-        return inv
-
-    # ─── RETIROS ───
-    def registrar_retiro(self, monto: float, notas: str = "") -> RetiroDeportivo:
-        if monto <= 0:
-            raise ValueError("El monto del retiro debe ser mayor a cero")
-
-        capital_disponible = self._calcular_capital_actual()
-        if monto > capital_disponible:
-            raise ValueError(f"Capital insuficiente. Disponible: ${capital_disponible:.2f}, Solicitado: ${monto:.2f}")
-
-        retiro = RetiroDeportivo(
-            monto=Decimal(str(monto)),
-            notas=notas
-        )
-        self.db.add(retiro)
-        self.db.commit()
-        self.db.refresh(retiro)
-        return retiro
-
-    def obtener_total_retiros(self) -> float:
-        total = self.db.query(func.sum(RetiroDeportivo.monto)).scalar()
-        return float(total or 0.0)
-
-    def obtener_historial_retiros(self, limit: int = 50) -> List[RetiroDeportivo]:
-        return self.db.query(RetiroDeportivo).order_by(RetiroDeportivo.fecha_retiro.desc()).limit(limit).all()
-
-    # ─── INYECCIONES DE CAPITAL (NUEVO) ───
-    def registrar_inyeccion(self, monto: float, notas: str = "") -> InyeccionCapitalDeportivo:
-        if monto <= 0:
-            raise ValueError("El monto de la inyección debe ser mayor a cero")
-
-        inyeccion = InyeccionCapitalDeportivo(
-            monto=Decimal(str(monto)),
-            notas=notas
-        )
-        self.db.add(inyeccion)
-        self.db.commit()
-        self.db.refresh(inyeccion)
-        return inyeccion
-
-    def obtener_total_inyecciones(self) -> float:
-        total = self.db.query(func.sum(InyeccionCapitalDeportivo.monto)).scalar()
-        return float(total or 0.0)
-
-    def obtener_historial_inyecciones(self, limit: int = 50) -> List[InyeccionCapitalDeportivo]:
-        return self.db.query(InyeccionCapitalDeportivo).order_by(InyeccionCapitalDeportivo.fecha_inyeccion.desc()).limit(limit).all()
-
-    def _calcular_capital_actual(self, capital_base: float = 1000.00) -> float:
-        """Calcula el capital real disponible considerando base, inyecciones, PnL y retiros."""
-        stats = self.obtener_resumen_y_estadisticas(capital_base=capital_base)
-        return stats["capital_actual"]
-
-    def pnl_diario(self, dias: int = 7) -> List[Dict[str, Any]]:
-        """Devuelve el PnL realizado agrupado por día de cierre (últimos N días)."""
-        desde = datetime.utcnow() - timedelta(days=dias)
-        resultados = self.db.query(
-            func.date(InversionDeportiva.fecha_cierre).label("fecha"),
-            func.sum(InversionDeportiva.pnl_realizado).label("pnl")
-        ).filter(
-            InversionDeportiva.estado.in_([
-                EstadoInversionDeportiva.GANADA,
-                EstadoInversionDeportiva.PERDIDA
-            ]),
-            InversionDeportiva.fecha_cierre >= desde
-        ).group_by(func.date(InversionDeportiva.fecha_cierre)).order_by("fecha").all()
-
-        pnl_por_dia = {str(r.fecha): float(r.pnl or 0) for r in resultados}
-        hoy = datetime.utcnow().date()
-        datos_finales = []
-        for i in range(dias - 1, -1, -1):
-            fecha = hoy - timedelta(days=i)
-            fecha_str = fecha.strftime("%Y-%m-%d")
-            datos_finales.append({
-                "fecha": fecha_str,
-                "pnl": pnl_por_dia.get(fecha_str, 0.0)
-            })
-        return datos_finales
-
-    def obtener_resumen_y_estadisticas(self, capital_base: float = 1000.00) -> Dict[str, Any]:
-        todas = self.db.query(InversionDeportiva).all()
-        cerradas = [i for i in todas if i.estado in [EstadoInversionDeportiva.GANADA, EstadoInversionDeportiva.PERDIDA]]
-
-        total_inversiones = len(todas)
-        abiertas = len([i for i in todas if i.estado == EstadoInversionDeportiva.ABIERTA])
-        ganadas = len([i for i in todas if i.estado == EstadoInversionDeportiva.GANADA])
-        perdidas = len([i for i in todas if i.estado == EstadoInversionDeportiva.PERDIDA])
-
-        capital_en_juego = sum(float(i.capital_invertido) for i in todas if i.estado == EstadoInversionDeportiva.ABIERTA)
-        capital_total_hist = sum(float(i.capital_invertido) for i in todas)
-        pnl_neto = sum(float(i.pnl_realizado) for i in cerradas)
-
-        win_rate = (ganadas / len(cerradas) * 100) if cerradas else 0.0
-
-        total_retiros = self.obtener_total_retiros()
-        total_inyecciones = self.obtener_total_inyecciones()
-        capital_actual = capital_base + total_inyecciones + pnl_neto - total_retiros
-
-        stats_objetivos = {}
-        for idx in cerradas:
-            obj = idx.objetivo
-            if obj not in stats_objetivos:
-                stats_objetivos[obj] = {"veces": 0, "pnl": 0.0, "ganadas": 0, "perdidas": 0, "deporte": idx.deporte}
-
-            stats_objetivos[obj]["veces"] += 1
-            stats_objetivos[obj]["pnl"] += float(idx.pnl_realizado)
-            if idx.estado == EstadoInversionDeportiva.GANADA:
-                stats_objetivos[obj]["ganadas"] += 1
-            elif idx.estado == EstadoInversionDeportiva.PERDIDA:
-                stats_objetivos[obj]["perdidas"] += 1
-
-        top_objetivos = sorted(stats_objetivos.items(), key=lambda x: x[1]["pnl"], reverse=True)
-        equipo_mas_rentable = top_objetivos[0] if top_objetivos else ("Ninguno", {"pnl": 0.0, "veces": 0})
-
-        ultimas_10 = cerradas[-10:] if len(cerradas) >= 10 else cerradas
-        datos_ultimas_10 = [
-            {
-                "id": idx.id,
-                "objetivo": idx.objetivo,
-                "pnl": float(idx.pnl_realizado),
-                "estado": idx.estado.value,
-                "deporte": idx.deporte
-            }
-            for idx in ultimas_10
-        ]
-
-        return {
-            "total_inversiones": total_inversiones,
-            "abiertas": abiertas,
-            "ganadas": ganadas,
-            "perdidas": perdidas,
-            "win_rate": round(win_rate, 1),
-            "capital_en_juego": round(capital_en_juego, 2),
-            "capital_total_historico": round(capital_total_hist, 2),
-            "pnl_neto": round(pnl_neto, 2),
-            "total_retiros": round(total_retiros, 2),
-            "total_inyecciones": round(total_inyecciones, 2),
-            "capital_actual": round(capital_actual, 2),
-            "equipo_mas_rentable": equipo_mas_rentable[0],
-            "max_ganancia_equipo": round(equipo_mas_rentable[1]["pnl"], 2),
-            "desglose_por_objetivo": [
-                {"objetivo": k, **v} for k, v in stats_objetivos.items()
-            ],
-            "ultimas_10_inversiones": datos_ultimas_10
-        }
-
-    def obtener_reporte_por_fechas(self, fecha_inicio: datetime, fecha_fin: datetime) -> Dict[str, Any]:
-        inversiones = self.db.query(InversionDeportiva).filter(
-            InversionDeportiva.estado.in_([EstadoInversionDeportiva.GANADA, EstadoInversionDeportiva.PERDIDA]),
-            InversionDeportiva.fecha_cierre >= fecha_inicio,
-            InversionDeportiva.fecha_cierre <= fecha_fin
-        ).all()
-
-        ganadas = len([i for i in inversiones if i.estado == EstadoInversionDeportiva.GANADA])
-        perdidas = len([i for i in inversiones if i.estado == EstadoInversionDeportiva.PERDIDA])
-        pnl_total = sum(float(i.pnl_realizado) for i in inversiones)
-
-        return {
-            "ganadas": ganadas,
-            "perdidas": perdidas,
-            "pnl_total": round(pnl_total, 2),
-            "total_inversiones": len(inversiones)
-        }
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
+sqlalchemy==2.0.30
+alembic==1.13.1
+pydantic==2.7.0
+pydantic-settings==2.2.1
+streamlit==1.35.0
+plotly==5.22.0
+pandas==2.2.2
+ccxt==4.3.0
+celery==5.4.0
+redis==5.0.0
+python-telegram-bot==21.0
+pytest==8.2.0
+httpx==0.27.0
+streamlit-autorefresh==1.0.1
+beautifulsoup4==4.12.3
+lxml==5.2.2
+feedparser==6.0.10
+scipy==1.13.0
+numpy==1.26.0
+apscheduler==3.10.4
 
 ================================================================================
-  FIN DE ARCHIVO: app/services/deportes_service.py
+  FIN DE ARCHIVO: requirements.txt
 ================================================================================
 ================================================================================
-  ARCHIVO: app/api/deportes.py
-================================================================================
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
-from typing import List, Optional
-from pydantic import BaseModel
-
-from app.models import SessionLocal
-from app.services.deportes_service import DeportesService
-
-router = APIRouter(prefix="/deportes", tags=["Deportes"])
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-class InversionCreate(BaseModel):
-    deporte: str
-    tipo_mercado: str
-    objetivo: str
-    capital: float
-    ganancia_potencial: float
-    perdida_potencial: float
-    cuota: Optional[float] = None
-    notas: Optional[str] = ""
-
-class RetiroCreate(BaseModel):
-    monto: float
-    notas: Optional[str] = ""
-
-class InyeccionCreate(BaseModel):
-    monto: float
-    notas: Optional[str] = ""
-
-@router.post("/", response_model=dict)
-def crear(inv: InversionCreate, db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    try:
-        res = srv.crear_inversion(**inv.dict())
-        return {"id": res.id, "objetivo": res.objetivo, "estado": res.estado.value}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@router.get("/resumen")
-def resumen(db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    return srv.obtener_resumen_y_estadisticas()
-
-@router.post("/{inv_id}/liquidar")
-def liquidar(inv_id: int, estado: str, db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    try:
-        res = srv.liquidar_inversion(inv_id, estado)
-        return {"id": res.id, "nuevo_estado": res.estado.value, "pnl": float(res.pnl_realizado)}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-# ─── ENDPOINTS DE RETIRO ───
-@router.post("/retiros", response_model=dict)
-def crear_retiro(data: RetiroCreate, db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    try:
-        res = srv.registrar_retiro(monto=data.monto, notas=data.notas or "")
-        return {
-            "id": res.id,
-            "monto": float(res.monto),
-            "fecha_retiro": res.fecha_retiro.isoformat(),
-            "notas": res.notas,
-            "capital_restante": srv._calcular_capital_actual()
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/retiros")
-def listar_retiros(limit: int = 50, db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    retiros = srv.obtener_historial_retiros(limit=limit)
-    return [
-        {
-            "id": r.id,
-            "monto": float(r.monto),
-            "fecha_retiro": r.fecha_retiro.isoformat(),
-            "notas": r.notas
-        }
-        for r in retiros
-    ]
-
-# ─── ENDPOINTS DE INYECCION DE CAPITAL (NUEVO) ───
-@router.post("/inyecciones", response_model=dict)
-def crear_inyeccion(data: InyeccionCreate, db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    try:
-        res = srv.registrar_inyeccion(monto=data.monto, notas=data.notas or "")
-        return {
-            "id": res.id,
-            "monto": float(res.monto),
-            "fecha_inyeccion": res.fecha_inyeccion.isoformat(),
-            "notas": res.notas,
-            "capital_actual": srv._calcular_capital_actual()
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/inyecciones")
-def listar_inyecciones(limit: int = 50, db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    inyecciones = srv.obtener_historial_inyecciones(limit=limit)
-    return [
-        {
-            "id": ic.id,
-            "monto": float(ic.monto),
-            "fecha_inyeccion": ic.fecha_inyeccion.isoformat(),
-            "notas": ic.notas
-        }
-        for ic in inyecciones
-    ]
-
-# ─── PnL DIARIO ───
-@router.get("/pnl-diario")
-def pnl_diario(dias: int = 7, db: Session = Depends(get_db)):
-    srv = DeportesService(db)
-    return srv.pnl_diario(dias=dias)
-
-================================================================================
-  FIN DE ARCHIVO: app/api/deportes.py
-================================================================================
-================================================================================
-  ARCHIVO: dashboard/deportes.py
+ARCHIVO: dashboard/deportes.py
 ================================================================================
 import sys
 import os
@@ -5651,10 +5302,10 @@ def mostrar_pagina_deportes():
 
         # ─── METRICAS PRINCIPALES ───
         col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Capital Actual", f"${capital_actual:,.2f}", delta=f"{stats['pnl_neto']:,.2f} PnL Neto")
+        col1.metric("Capital Actual", f"Bs {capital_actual:,.2f}", delta=f"{stats['pnl_neto']:,.2f} PnL Neto")
         col2.metric("Tasa Aciertos (Win Rate)", f"{stats['win_rate']}%")
-        col3.metric("Capital en Juego", f"${stats['capital_en_juego']:,.2f}")
-        col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"${stats['max_ganancia_equipo']:,.2f}")
+        col3.metric("Capital en Juego", f"Bs {stats['capital_en_juego']:,.2f}")
+        col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"Bs {stats['max_ganancia_equipo']:,.2f}")
         col5.metric("Total Apuestas", f"{stats['total_inversiones']} ({stats['ganadas']}G / {stats['perdidas']}P)")
 
         # ─── DESGLOSE TRANSPARENTE DEL CAPITAL ───
@@ -5662,12 +5313,12 @@ def mostrar_pagina_deportes():
             st.markdown("""
             <div style="background-color: #1e2a3a; padding: 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
             <table style="width:100%; color: #e0e0e0; font-size: 14px;">
-                <tr><td style="padding: 6px 0;">💵 Capital Base Inicial</td><td style="text-align:right; font-weight:600;">${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0; color: #00e676;">⬆️ Total Inyecciones de Capital</td><td style="text-align:right; font-weight:600; color: #00e676;">+${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0;">📈 PnL Neto Acumulado (Ganadas - Perdidas)</td><td style="text-align:right; font-weight:600; color: {};">${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.1);">💰 Subtotal (Base + Inyecciones + PnL)</td><td style="text-align:right; font-weight:600; border-top: 1px solid rgba(255,255,255,0.1);">${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0; color: #ff6b6b;">⬇️ Total Retiros Registrados</td><td style="text-align:right; font-weight:600; color: #ff6b6b;">-${:,.2f}</td></tr>
-                <tr><td style="padding: 10px 0; border-top: 2px solid #ffd700; font-size: 16px; font-weight:700; color: #ffd700;">🏦 CAPITAL ACTUAL REAL</td><td style="text-align:right; font-weight:700; color: #ffd700; border-top: 2px solid #ffd700; font-size: 16px;">${:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0;">💵 Capital Base Inicial</td><td style="text-align:right; font-weight:600;">Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; color: #00e676;">⬆️ Total Inyecciones de Capital</td><td style="text-align:right; font-weight:600; color: #00e676;">+Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0;">📈 PnL Neto Acumulado (Ganadas - Perdidas)</td><td style="text-align:right; font-weight:600; color: {};">Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.1);">💰 Subtotal (Base + Inyecciones + PnL)</td><td style="text-align:right; font-weight:600; border-top: 1px solid rgba(255,255,255,0.1);">Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; color: #ff6b6b;">⬇️ Total Retiros Registrados</td><td style="text-align:right; font-weight:600; color: #ff6b6b;">-Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 10px 0; border-top: 2px solid #ffd700; font-size: 16px; font-weight:700; color: #ffd700;">🏦 CAPITAL ACTUAL REAL</td><td style="text-align:right; font-weight:700; color: #ffd700; border-top: 2px solid #ffd700; font-size: 16px;">Bs {:,.2f}</td></tr>
             </table>
             </div>
             """.format(
@@ -5680,18 +5331,18 @@ def mostrar_pagina_deportes():
             ), unsafe_allow_html=True)
 
             if total_inyecciones > 0:
-                st.success(f"💡 Has inyectado ${total_inyecciones:,.2f} de capital adicional. Tu inversión total de bolsillo es: ${CAPITAL_BASE_INICIAL + total_inyecciones:,.2f}")
+                st.success(f"💡 Has inyectado Bs {total_inyecciones:,.2f} de capital adicional. Tu inversión total de bolsillo es: Bs {CAPITAL_BASE_INICIAL + total_inyecciones:,.2f}")
             if total_retiros > 0:
-                st.info(f"ℹ️ Has retirado ${total_retiros:,.2f} en total.")
+                st.info(f"ℹ️ Has retirado Bs {total_retiros:,.2f} en total.")
 
             # Comparativa: ¿Estoy en ganancia o pérdida respecto a lo invertido?
             dinero_de_bolsillo = CAPITAL_BASE_INICIAL + total_inyecciones
             ganancia_vs_bolsillo = capital_actual - dinero_de_bolsillo
             if dinero_de_bolsillo > 0:
                 if ganancia_vs_bolsillo >= 0:
-                    st.success(f"🎯 **Estás en GANANCIA** respecto a tu dinero de bolsillo: +${ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
+                    st.success(f"🎯 **Estás en GANANCIA** respecto a tu dinero de bolsillo: +Bs {ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
                 else:
-                    st.error(f"🎯 **Estás en PÉRDIDA** respecto a tu dinero de bolsillo: ${ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
+                    st.error(f"🎯 **Estás en PÉRDIDA** respecto a tu dinero de bolsillo: Bs {ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
 
         st.divider()
 
@@ -5703,10 +5354,10 @@ def mostrar_pagina_deportes():
         # ─── INYECCIONES ───
         with col_i1:
             with st.expander("⬆️ Inyectar Capital Nuevo", expanded=False):
-                st.info(f"Capital actual: **${capital_actual:,.2f}**")
+                st.info(f"Capital actual: **Bs {capital_actual:,.2f}**")
                 with st.form("form_inyeccion"):
                     monto_inyeccion = st.number_input(
-                        "Monto a inyectar ($)", 
+                        "Monto a inyectar (Bs)", 
                         min_value=0.01, 
                         value=100.0,
                         step=10.0,
@@ -5728,8 +5379,8 @@ def mostrar_pagina_deportes():
                                 )
                                 if r.status_code == 200:
                                     data = r.json()
-                                    st.success(f"✅ Inyección de ${data['monto']:,.2f} registrada!")
-                                    st.info(f"Capital actualizado: ${data['capital_actual']:,.2f}")
+                                    st.success(f"✅ Inyección de Bs {data['monto']:,.2f} registrada!")
+                                    st.info(f"Capital actualizado: Bs {data['capital_actual']:,.2f}")
                                     st.rerun()
                                 elif r.status_code == 400:
                                     st.error(f"Error: {r.json().get('detail', 'Solicitud inválida')}")
@@ -5761,7 +5412,7 @@ def mostrar_pagina_deportes():
                                 color="Monto",
                                 color_continuous_scale="Greens"
                             )
-                            fig_iny.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+                            fig_iny.update_traces(texttemplate='Bs %{text:,.2f}', textposition='outside')
                             st.plotly_chart(fig_iny, use_container_width=True)
                         else:
                             st.info("No hay inyecciones registradas todavía.")
@@ -5773,10 +5424,10 @@ def mostrar_pagina_deportes():
         # ─── RETIROS ───
         with col_r2:
             with st.expander("⬇️ Retirar Capital / Ganancias", expanded=False):
-                st.info(f"Capital disponible para retirar: **${capital_actual:,.2f}**")
+                st.info(f"Capital disponible para retirar: **Bs {capital_actual:,.2f}**")
                 with st.form("form_retiro"):
                     monto_retiro = st.number_input(
-                        "Monto a retirar ($)", 
+                        "Monto a retirar (Bs)", 
                         min_value=0.01, 
                         max_value=float(capital_actual) if capital_actual > 0 else 0.01,
                         value=min(100.0, float(capital_actual)) if capital_actual > 0 else 0.01,
@@ -5791,7 +5442,7 @@ def mostrar_pagina_deportes():
                         if monto_retiro <= 0:
                             st.error("El monto debe ser mayor a cero.")
                         elif monto_retiro > capital_actual:
-                            st.error(f"Fondos insuficientes. Capital disponible: ${capital_actual:,.2f}")
+                            st.error(f"Fondos insuficientes. Capital disponible: Bs {capital_actual:,.2f}")
                         else:
                             try:
                                 r = requests.post(
@@ -5801,8 +5452,8 @@ def mostrar_pagina_deportes():
                                 )
                                 if r.status_code == 200:
                                     data = r.json()
-                                    st.success(f"✅ Retiro de ${data['monto']:,.2f} registrado exitosamente!")
-                                    st.info(f"Capital restante: ${data['capital_restante']:,.2f}")
+                                    st.success(f"✅ Retiro de Bs {data['monto']:,.2f} registrado exitosamente!")
+                                    st.info(f"Capital restante: Bs {data['capital_restante']:,.2f}")
                                     st.rerun()
                                 elif r.status_code == 400:
                                     st.error(f"Error: {r.json().get('detail', 'Solicitud inválida')}")
@@ -5834,7 +5485,7 @@ def mostrar_pagina_deportes():
                                 color="Monto",
                                 color_continuous_scale="Reds"
                             )
-                            fig_ret.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+                            fig_ret.update_traces(texttemplate='Bs %{text:,.2f}', textposition='outside')
                             st.plotly_chart(fig_ret, use_container_width=True)
                         else:
                             st.info("No hay retiros registrados todavía.")
@@ -5874,8 +5525,8 @@ def mostrar_pagina_deportes():
                     r_col3.metric("❌ Perdidas", reporte["perdidas"])
 
                     pnl_valor = reporte['pnl_total']
-                    r_col4.metric("💰 PnL Total", f"${pnl_valor:,.2f}", 
-                                  delta=f"${pnl_valor:,.2f}" if pnl_valor >= 0 else f"-${abs(pnl_valor):,.2f}",
+                    r_col4.metric("💰 PnL Total", f"Bs {pnl_valor:,.2f}", 
+                                  delta=f"Bs {pnl_valor:,.2f}" if pnl_valor >= 0 else f"-Bs {abs(pnl_valor):,.2f}",
                                   delta_color="normal" if pnl_valor >= 0 else "inverse")
 
         # ─── FORMULARIO DE REGISTRO ───
@@ -5893,9 +5544,9 @@ def mostrar_pagina_deportes():
                     else:
                         objetivo = st.text_input("Estadística (Ej: OVER 8.5 STRIKEOUTS, +2.5 GOLES)").upper()
                 with c3:
-                    capital = st.number_input("Capital Invertido ($)", min_value=1.0, value=20.0, step=5.0)
-                    ganancia_pot = st.number_input("Ganancia Total a Cobrar ($)", min_value=0.0, value=38.0, step=5.0, help="El total que paga el ticket (Inversión + Ganancia)")
-                    perdida_pot = st.number_input("Pérdida Potencial ($)", min_value=0.0, value=20.0, step=5.0)
+                    capital = st.number_input("Capital Invertido (Bs)", min_value=1.0, value=20.0, step=5.0)
+                    ganancia_pot = st.number_input("Ganancia Total a Cobrar (Bs)", min_value=0.0, value=38.0, step=5.0, help="El total que paga el ticket (Inversión + Ganancia)")
+                    perdida_pot = st.number_input("Pérdida Potencial (Bs)", min_value=0.0, value=20.0, step=5.0)
 
                 notas = st.text_input("Notas o Análisis del partido")
 
@@ -5920,9 +5571,9 @@ def mostrar_pagina_deportes():
                     df_ultimas,
                     x="etiqueta", y="pnl",
                     color="pnl", color_continuous_scale="RdYlGn",
-                    text="pnl", title="Ganancia/Pérdida Cronológica (USD)"
+                    text="pnl", title="Ganancia/Pérdida Cronológica (Bs)"
                 )
-                fig_pnl.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
+                fig_pnl.update_traces(texttemplate='Bs %{text:.2f}', textposition='outside')
                 st.plotly_chart(fig_pnl, use_container_width=True)
 
             with g_col2:
@@ -5954,13 +5605,13 @@ def mostrar_pagina_deportes():
                         name='PnL',
                         line=dict(color='#00e676', width=3),
                         marker=dict(size=8, color=['#00e676' if v >= 0 else '#ff6b6b' for v in df_pnl_dia["pnl"]]),
-                        text=df_pnl_dia["pnl"].apply(lambda x: f"${x:.2f}"),
+                        text=df_pnl_dia["pnl"].apply(lambda x: f"Bs {x:.2f}"),
                         textposition="top center"
                     ))
                     fig_line.update_layout(
                         title="Evolución diaria de Ganancias / Pérdidas",
                         xaxis_title="Fecha",
-                        yaxis_title="PnL (USD)",
+                        yaxis_title="PnL (Bs)",
                         height=400,
                         template="plotly_dark",
                         showlegend=False
@@ -5985,10 +5636,10 @@ def mostrar_pagina_deportes():
                         st.markdown(f"**{inv.deporte}** | `{inv.tipo_mercado.value}`")
                         st.markdown(f"### {inv.objetivo}")
                     with r2:
-                        st.metric("Capital", f"${inv.capital_invertido}")
+                        st.metric("Capital", f"Bs {inv.capital_invertido}")
                     with r3:
-                        st.write(f"🟢 **A ganar:** +${inv.ganancia_potencial}")
-                        st.write(f"🔴 **A perder:** -${inv.perdida_potencial}")
+                        st.write(f"🟢 **A ganar:** +Bs {inv.ganancia_potencial}")
+                        st.write(f"🔴 **A perder:** -Bs {inv.perdida_potencial}")
                     with r4:
                         st.write("Liq. Resultado:")
                         b_col1, b_col2, b_col3 = st.columns(3)
@@ -6010,33 +5661,4 @@ def mostrar_pagina_deportes():
 
 ================================================================================
   FIN DE ARCHIVO: dashboard/deportes.py
-================================================================================
-================================================================================
-  ARCHIVO: requirements.txt
-================================================================================
-fastapi==0.111.0
-uvicorn[standard]==0.30.0
-sqlalchemy==2.0.30
-alembic==1.13.1
-pydantic==2.7.0
-pydantic-settings==2.2.1
-streamlit==1.35.0
-plotly==5.22.0
-pandas==2.2.2
-ccxt==4.3.0
-celery==5.4.0
-redis==5.0.0
-python-telegram-bot==21.0
-pytest==8.2.0
-httpx==0.27.0
-streamlit-autorefresh==1.0.1
-beautifulsoup4==4.12.3
-lxml==5.2.2
-feedparser==6.0.10
-scipy==1.13.0
-numpy==1.26.0
-apscheduler==3.10.4
-
-================================================================================
-  FIN DE ARCHIVO: requirements.txt
 ================================================================================

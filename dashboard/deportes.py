@@ -35,10 +35,10 @@ def mostrar_pagina_deportes():
 
         # ─── METRICAS PRINCIPALES ───
         col1, col2, col3, col4, col5 = st.columns(5)
-        col1.metric("Capital Actual", f"${capital_actual:,.2f}", delta=f"{stats['pnl_neto']:,.2f} PnL Neto")
+        col1.metric("Capital Actual", f"Bs {capital_actual:,.2f}", delta=f"{stats['pnl_neto']:,.2f} PnL Neto")
         col2.metric("Tasa Aciertos (Win Rate)", f"{stats['win_rate']}%")
-        col3.metric("Capital en Juego", f"${stats['capital_en_juego']:,.2f}")
-        col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"${stats['max_ganancia_equipo']:,.2f}")
+        col3.metric("Capital en Juego", f"Bs {stats['capital_en_juego']:,.2f}")
+        col4.metric("Equipo Más Rentable", str(stats['equipo_mas_rentable']), delta=f"Bs {stats['max_ganancia_equipo']:,.2f}")
         col5.metric("Total Apuestas", f"{stats['total_inversiones']} ({stats['ganadas']}G / {stats['perdidas']}P)")
 
         # ─── DESGLOSE TRANSPARENTE DEL CAPITAL ───
@@ -46,12 +46,12 @@ def mostrar_pagina_deportes():
             st.markdown("""
             <div style="background-color: #1e2a3a; padding: 16px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06);">
             <table style="width:100%; color: #e0e0e0; font-size: 14px;">
-                <tr><td style="padding: 6px 0;">💵 Capital Base Inicial</td><td style="text-align:right; font-weight:600;">${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0; color: #00e676;">⬆️ Total Inyecciones de Capital</td><td style="text-align:right; font-weight:600; color: #00e676;">+${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0;">📈 PnL Neto Acumulado (Ganadas - Perdidas)</td><td style="text-align:right; font-weight:600; color: {};">${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.1);">💰 Subtotal (Base + Inyecciones + PnL)</td><td style="text-align:right; font-weight:600; border-top: 1px solid rgba(255,255,255,0.1);">${:,.2f}</td></tr>
-                <tr><td style="padding: 6px 0; color: #ff6b6b;">⬇️ Total Retiros Registrados</td><td style="text-align:right; font-weight:600; color: #ff6b6b;">-${:,.2f}</td></tr>
-                <tr><td style="padding: 10px 0; border-top: 2px solid #ffd700; font-size: 16px; font-weight:700; color: #ffd700;">🏦 CAPITAL ACTUAL REAL</td><td style="text-align:right; font-weight:700; color: #ffd700; border-top: 2px solid #ffd700; font-size: 16px;">${:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0;">💵 Capital Base Inicial</td><td style="text-align:right; font-weight:600;">Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; color: #00e676;">⬆️ Total Inyecciones de Capital</td><td style="text-align:right; font-weight:600; color: #00e676;">+Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0;">📈 PnL Neto Acumulado (Ganadas - Perdidas)</td><td style="text-align:right; font-weight:600; color: {};">Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; border-top: 1px solid rgba(255,255,255,0.1);">💰 Subtotal (Base + Inyecciones + PnL)</td><td style="text-align:right; font-weight:600; border-top: 1px solid rgba(255,255,255,0.1);">Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 6px 0; color: #ff6b6b;">⬇️ Total Retiros Registrados</td><td style="text-align:right; font-weight:600; color: #ff6b6b;">-Bs {:,.2f}</td></tr>
+                <tr><td style="padding: 10px 0; border-top: 2px solid #ffd700; font-size: 16px; font-weight:700; color: #ffd700;">🏦 CAPITAL ACTUAL REAL</td><td style="text-align:right; font-weight:700; color: #ffd700; border-top: 2px solid #ffd700; font-size: 16px;">Bs {:,.2f}</td></tr>
             </table>
             </div>
             """.format(
@@ -64,18 +64,18 @@ def mostrar_pagina_deportes():
             ), unsafe_allow_html=True)
 
             if total_inyecciones > 0:
-                st.success(f"💡 Has inyectado ${total_inyecciones:,.2f} de capital adicional. Tu inversión total de bolsillo es: ${CAPITAL_BASE_INICIAL + total_inyecciones:,.2f}")
+                st.success(f"💡 Has inyectado Bs {total_inyecciones:,.2f} de capital adicional. Tu inversión total de bolsillo es: Bs {CAPITAL_BASE_INICIAL + total_inyecciones:,.2f}")
             if total_retiros > 0:
-                st.info(f"ℹ️ Has retirado ${total_retiros:,.2f} en total.")
+                st.info(f"ℹ️ Has retirado Bs {total_retiros:,.2f} en total.")
 
             # Comparativa: ¿Estoy en ganancia o pérdida respecto a lo invertido?
             dinero_de_bolsillo = CAPITAL_BASE_INICIAL + total_inyecciones
             ganancia_vs_bolsillo = capital_actual - dinero_de_bolsillo
             if dinero_de_bolsillo > 0:
                 if ganancia_vs_bolsillo >= 0:
-                    st.success(f"🎯 **Estás en GANANCIA** respecto a tu dinero de bolsillo: +${ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
+                    st.success(f"🎯 **Estás en GANANCIA** respecto a tu dinero de bolsillo: +Bs {ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
                 else:
-                    st.error(f"🎯 **Estás en PÉRDIDA** respecto a tu dinero de bolsillo: ${ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
+                    st.error(f"🎯 **Estás en PÉRDIDA** respecto a tu dinero de bolsillo: Bs {ganancia_vs_bolsillo:,.2f} ({(ganancia_vs_bolsillo/dinero_de_bolsillo)*100:.1f}%)")
 
         st.divider()
 
@@ -87,10 +87,10 @@ def mostrar_pagina_deportes():
         # ─── INYECCIONES ───
         with col_i1:
             with st.expander("⬆️ Inyectar Capital Nuevo", expanded=False):
-                st.info(f"Capital actual: **${capital_actual:,.2f}**")
+                st.info(f"Capital actual: **Bs {capital_actual:,.2f}**")
                 with st.form("form_inyeccion"):
                     monto_inyeccion = st.number_input(
-                        "Monto a inyectar ($)", 
+                        "Monto a inyectar (Bs)", 
                         min_value=0.01, 
                         value=100.0,
                         step=10.0,
@@ -112,8 +112,8 @@ def mostrar_pagina_deportes():
                                 )
                                 if r.status_code == 200:
                                     data = r.json()
-                                    st.success(f"✅ Inyección de ${data['monto']:,.2f} registrada!")
-                                    st.info(f"Capital actualizado: ${data['capital_actual']:,.2f}")
+                                    st.success(f"✅ Inyección de Bs {data['monto']:,.2f} registrada!")
+                                    st.info(f"Capital actualizado: Bs {data['capital_actual']:,.2f}")
                                     st.rerun()
                                 elif r.status_code == 400:
                                     st.error(f"Error: {r.json().get('detail', 'Solicitud inválida')}")
@@ -145,7 +145,7 @@ def mostrar_pagina_deportes():
                                 color="Monto",
                                 color_continuous_scale="Greens"
                             )
-                            fig_iny.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+                            fig_iny.update_traces(texttemplate='Bs %{text:,.2f}', textposition='outside')
                             st.plotly_chart(fig_iny, use_container_width=True)
                         else:
                             st.info("No hay inyecciones registradas todavía.")
@@ -157,10 +157,10 @@ def mostrar_pagina_deportes():
         # ─── RETIROS ───
         with col_r2:
             with st.expander("⬇️ Retirar Capital / Ganancias", expanded=False):
-                st.info(f"Capital disponible para retirar: **${capital_actual:,.2f}**")
+                st.info(f"Capital disponible para retirar: **Bs {capital_actual:,.2f}**")
                 with st.form("form_retiro"):
                     monto_retiro = st.number_input(
-                        "Monto a retirar ($)", 
+                        "Monto a retirar (Bs)", 
                         min_value=0.01, 
                         max_value=float(capital_actual) if capital_actual > 0 else 0.01,
                         value=min(100.0, float(capital_actual)) if capital_actual > 0 else 0.01,
@@ -175,7 +175,7 @@ def mostrar_pagina_deportes():
                         if monto_retiro <= 0:
                             st.error("El monto debe ser mayor a cero.")
                         elif monto_retiro > capital_actual:
-                            st.error(f"Fondos insuficientes. Capital disponible: ${capital_actual:,.2f}")
+                            st.error(f"Fondos insuficientes. Capital disponible: Bs {capital_actual:,.2f}")
                         else:
                             try:
                                 r = requests.post(
@@ -185,8 +185,8 @@ def mostrar_pagina_deportes():
                                 )
                                 if r.status_code == 200:
                                     data = r.json()
-                                    st.success(f"✅ Retiro de ${data['monto']:,.2f} registrado exitosamente!")
-                                    st.info(f"Capital restante: ${data['capital_restante']:,.2f}")
+                                    st.success(f"✅ Retiro de Bs {data['monto']:,.2f} registrado exitosamente!")
+                                    st.info(f"Capital restante: Bs {data['capital_restante']:,.2f}")
                                     st.rerun()
                                 elif r.status_code == 400:
                                     st.error(f"Error: {r.json().get('detail', 'Solicitud inválida')}")
@@ -218,7 +218,7 @@ def mostrar_pagina_deportes():
                                 color="Monto",
                                 color_continuous_scale="Reds"
                             )
-                            fig_ret.update_traces(texttemplate='$%{text:,.2f}', textposition='outside')
+                            fig_ret.update_traces(texttemplate='Bs %{text:,.2f}', textposition='outside')
                             st.plotly_chart(fig_ret, use_container_width=True)
                         else:
                             st.info("No hay retiros registrados todavía.")
@@ -258,8 +258,8 @@ def mostrar_pagina_deportes():
                     r_col3.metric("❌ Perdidas", reporte["perdidas"])
 
                     pnl_valor = reporte['pnl_total']
-                    r_col4.metric("💰 PnL Total", f"${pnl_valor:,.2f}", 
-                                  delta=f"${pnl_valor:,.2f}" if pnl_valor >= 0 else f"-${abs(pnl_valor):,.2f}",
+                    r_col4.metric("💰 PnL Total", f"Bs {pnl_valor:,.2f}", 
+                                  delta=f"Bs {pnl_valor:,.2f}" if pnl_valor >= 0 else f"-Bs {abs(pnl_valor):,.2f}",
                                   delta_color="normal" if pnl_valor >= 0 else "inverse")
 
         # ─── FORMULARIO DE REGISTRO ───
@@ -277,9 +277,9 @@ def mostrar_pagina_deportes():
                     else:
                         objetivo = st.text_input("Estadística (Ej: OVER 8.5 STRIKEOUTS, +2.5 GOLES)").upper()
                 with c3:
-                    capital = st.number_input("Capital Invertido ($)", min_value=1.0, value=20.0, step=5.0)
-                    ganancia_pot = st.number_input("Ganancia Total a Cobrar ($)", min_value=0.0, value=38.0, step=5.0, help="El total que paga el ticket (Inversión + Ganancia)")
-                    perdida_pot = st.number_input("Pérdida Potencial ($)", min_value=0.0, value=20.0, step=5.0)
+                    capital = st.number_input("Capital Invertido (Bs)", min_value=1.0, value=20.0, step=5.0)
+                    ganancia_pot = st.number_input("Ganancia Total a Cobrar (Bs)", min_value=0.0, value=38.0, step=5.0, help="El total que paga el ticket (Inversión + Ganancia)")
+                    perdida_pot = st.number_input("Pérdida Potencial (Bs)", min_value=0.0, value=20.0, step=5.0)
 
                 notas = st.text_input("Notas o Análisis del partido")
 
@@ -304,9 +304,9 @@ def mostrar_pagina_deportes():
                     df_ultimas,
                     x="etiqueta", y="pnl",
                     color="pnl", color_continuous_scale="RdYlGn",
-                    text="pnl", title="Ganancia/Pérdida Cronológica (USD)"
+                    text="pnl", title="Ganancia/Pérdida Cronológica (Bs)"
                 )
-                fig_pnl.update_traces(texttemplate='$%{text:.2f}', textposition='outside')
+                fig_pnl.update_traces(texttemplate='Bs %{text:.2f}', textposition='outside')
                 st.plotly_chart(fig_pnl, use_container_width=True)
 
             with g_col2:
@@ -338,13 +338,13 @@ def mostrar_pagina_deportes():
                         name='PnL',
                         line=dict(color='#00e676', width=3),
                         marker=dict(size=8, color=['#00e676' if v >= 0 else '#ff6b6b' for v in df_pnl_dia["pnl"]]),
-                        text=df_pnl_dia["pnl"].apply(lambda x: f"${x:.2f}"),
+                        text=df_pnl_dia["pnl"].apply(lambda x: f"Bs {x:.2f}"),
                         textposition="top center"
                     ))
                     fig_line.update_layout(
                         title="Evolución diaria de Ganancias / Pérdidas",
                         xaxis_title="Fecha",
-                        yaxis_title="PnL (USD)",
+                        yaxis_title="PnL (Bs)",
                         height=400,
                         template="plotly_dark",
                         showlegend=False
@@ -369,10 +369,10 @@ def mostrar_pagina_deportes():
                         st.markdown(f"**{inv.deporte}** | `{inv.tipo_mercado.value}`")
                         st.markdown(f"### {inv.objetivo}")
                     with r2:
-                        st.metric("Capital", f"${inv.capital_invertido}")
+                        st.metric("Capital", f"Bs {inv.capital_invertido}")
                     with r3:
-                        st.write(f"🟢 **A ganar:** +${inv.ganancia_potencial}")
-                        st.write(f"🔴 **A perder:** -${inv.perdida_potencial}")
+                        st.write(f"🟢 **A ganar:** +Bs {inv.ganancia_potencial}")
+                        st.write(f"🔴 **A perder:** -Bs {inv.perdida_potencial}")
                     with r4:
                         st.write("Liq. Resultado:")
                         b_col1, b_col2, b_col3 = st.columns(3)
@@ -391,3 +391,4 @@ def mostrar_pagina_deportes():
 
     finally:
         db.close()
+
